@@ -127,7 +127,7 @@ QFlags< ChanACL::Perm > ChanACL::effectivePermissions(ServerUser *p, Channel *ch
 	}
 
 	// Default permissions
-	Permissions def = Traverse | Enter | Speak | Whisper | TextMessage | Listen;
+	Permissions def = Traverse | Enter | Speak | Whisper | TextMessage | Listen | TextMessageHistory;
 
 	granted = def;
 
@@ -314,6 +314,8 @@ QString ChanACL::whatsThis(Perm p) {
 		case Listen:
 			return tr("This represents the permission to use the listen-feature allowing to listen to a channel "
 					  "without being in it.");
+		case TextMessageHistory:
+			return tr("This represents the permission to read the text message history of this channel.");
 		default:
 			break;
 	}
@@ -369,6 +371,8 @@ QString ChanACL::permName(Perm p) {
 			return tr("Register Self");
 		case Listen:
 			return tr("Listen");
+		case TextMessageHistory:
+			return tr("Read text history");
 		default:
 			break;
 	}

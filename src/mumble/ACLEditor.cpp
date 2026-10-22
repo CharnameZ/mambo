@@ -120,6 +120,10 @@ ACLEditor::ACLEditor(unsigned int channelid, const MumbleProto::ACL &mea, QWidge
 				&& (perm == ChanACL::ResetUserContent || perm == ChanACL::Listen)) {
 				continue;
 			}
+			// Servers older than this version don't know about the chat history permission
+			if (Global::get().sh->m_version < Version::fromComponents(1, 7, 0) && perm == ChanACL::TextMessageHistory) {
+				continue;
+			}
 
 			QCheckBox *qcb;
 			l = new QLabel(name, qgbACLpermissions);
@@ -187,8 +191,8 @@ ACLEditor::ACLEditor(unsigned int channelid, const MumbleProto::ACL &mea, QWidge
 	def->bInherited = true;
 	def->iUserId    = -1;
 	def->qsGroup    = QLatin1String("all");
-	def->pAllow =
-		ChanACL::Traverse | ChanACL::Enter | ChanACL::Speak | ChanACL::Whisper | ChanACL::TextMessage | ChanACL::Listen;
+	def->pAllow     = ChanACL::Traverse | ChanACL::Enter | ChanACL::Speak | ChanACL::Whisper | ChanACL::TextMessage
+				  | ChanACL::Listen | ChanACL::TextMessageHistory;
 	def->pDeny = (~def->pAllow) & ChanACL::All;
 
 	qlACLs << def;

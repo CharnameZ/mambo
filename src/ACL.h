@@ -19,19 +19,20 @@ private:
 	Q_DISABLE_COPY(ChanACL)
 public:
 	enum Perm {
-		None            = 0x0,
-		Write           = 0x1,
-		Traverse        = 0x2,
-		Enter           = 0x4,
-		Speak           = 0x8,
-		MuteDeafen      = 0x10,
-		Move            = 0x20,
-		MakeChannel     = 0x40,
-		LinkChannel     = 0x80,
-		Whisper         = 0x100,
-		TextMessage     = 0x200,
-		MakeTempChannel = 0x400,
-		Listen          = 0x800,
+		None               = 0x0,
+		Write              = 0x1,
+		Traverse           = 0x2,
+		Enter              = 0x4,
+		Speak              = 0x8,
+		MuteDeafen         = 0x10,
+		Move               = 0x20,
+		MakeChannel        = 0x40,
+		LinkChannel        = 0x80,
+		Whisper            = 0x100,
+		TextMessage        = 0x200,
+		MakeTempChannel    = 0x400,
+		Listen             = 0x800,
+		TextMessageHistory = 0x1000,
 
 		// Root channel only
 		Kick             = 0x10000,
@@ -42,7 +43,7 @@ public:
 
 		Cached = 0x8000000,
 		All = Write + Traverse + Enter + Speak + MuteDeafen + Move + MakeChannel + LinkChannel + Whisper + TextMessage
-			  + MakeTempChannel + Listen + Kick + Ban + Register + SelfRegister + ResetUserContent
+			  + MakeTempChannel + Listen + TextMessageHistory + Kick + Ban + Register + SelfRegister + ResetUserContent
 	};
 
 	Q_DECLARE_FLAGS(Permissions, Perm)
