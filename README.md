@@ -2,6 +2,8 @@
 
 # Mumble - Open Source voice-chat software
 
+[**English**](README.md) | [简体中文](README.zh-CN.md)
+
 > [!WARNING]
 > **This is an unofficial fork of [Mumble](https://github.com/mumble-voip/mumble).** It is not
 > affiliated with, endorsed by, or supported by the Mumble project.
