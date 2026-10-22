@@ -2950,6 +2950,10 @@ Are you sure you wish to replace your certificate?
         <translation type="unfinished"></translation>
     </message>
     <message>
+        <source>This represents the permission to read the text message history of this channel.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Whisper</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2978,6 +2982,10 @@ Are you sure you wish to replace your certificate?
         <translation type="unfinished"></translation>
     </message>
     <message>
+        <source>Read text history</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Write ACL</source>
         <translation type="unfinished"></translation>
     </message>
@@ -2995,6 +3003,77 @@ Are you sure you wish to replace your certificate?
     </message>
     <message>
         <source>Reset User Content</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>ChatHistoryController</name>
+    <message>
+        <source>The server announced chat history support but did not send a chat history policy.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed to load chat history: the server did not respond.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Chat History</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>This server stores text messages sent to channels so that they can be shown again later. Private messages are not stored. Only users with the &quot;Read text history&quot; permission can view the stored messages.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message numerus="yes">
+        <source>Messages are retained for %n day(s).</source>
+        <translation type="unfinished">
+            <numerusform></numerusform>
+            <numerusform></numerusform>
+            <numerusform></numerusform>
+        </translation>
+    </message>
+    <message>
+        <source>Messages are retained indefinitely.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>This server requires you to accept this policy in order to stay connected.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Accept and continue</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Disconnect</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Continue without history</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Chat history is disabled for this session.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed to load chat history: request rate limited.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed to load chat history: internal server error.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Unknown</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Chat history of %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Chat history</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -6914,6 +6993,14 @@ the channel&apos;s context menu.</source>
     </message>
     <message>
         <source>This will check if mumble is up to date</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Load earlier messages</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Loads older messages from this channel&apos;s chat history.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
