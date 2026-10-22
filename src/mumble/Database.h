@@ -62,6 +62,9 @@ public:
 	void setChannelFilterMode(const QByteArray &server_cert_digest, unsigned int channel_id,
 							  ChannelFilterMode filterMode);
 
+	bool hasChatHistoryConsent(const QByteArray &server_digest, unsigned int policy_version);
+	void setChatHistoryConsent(const QByteArray &server_digest, unsigned int policy_version);
+
 	QMap< UnresolvedServerAddress, unsigned int > getPingCache();
 	void setPingCache(const QMap< UnresolvedServerAddress, unsigned int > &cache);
 

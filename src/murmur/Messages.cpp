@@ -19,10 +19,14 @@
 #include "Version.h"
 #include "crypto/CryptState.h"
 
+#include "murmur/database/ChronoUtils.h"
 #include "murmur/database/UserProperty.h"
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <exception>
+#include <limits>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -33,6 +37,21 @@
 #include <QtCore/QtEndian>
 
 #include <tracy/Tracy.hpp>
+
+namespace msdb = ::mumble::server::db;
+
+namespace {
+constexpr std::uint64_t chatHistoryFeatureMask = static_cast< std::uint64_t >(Mumble::Protocol::Feature::ChatHistory);
+
+bool isChatHistoryCapable(const ServerUser *user) {
+	return user->featuresReceived && (user->clientFeatures & chatHistoryFeatureMask) != 0;
+}
+
+/// Upper bound for the number of text messages a single user may have waiting for the rate
+/// limiter. Messages beyond that are rejected with an explicit error instead of being dropped
+/// silently.
+constexpr std::size_t maxQueuedTextMessages = 50;
+} // namespace
 
 #define RATELIMIT(user)                   \
 	if (user->leakyBucket.ratelimit(1)) { \
@@ -168,6 +187,35 @@ bool isChannelEnterRestricted(Channel *c) {
 	return false;
 }
 
+void Server::sendChatHistoryPolicy(ServerUser *user) {
+	if (!chatHistoryEnabled || !isChatHistoryCapable(user)) {
+		return;
+	}
+
+	MumbleProto::ChatHistoryPolicy policy;
+	policy.set_enabled(true);
+	policy.set_consent_required(chatHistoryConsentRequired);
+	policy.set_required_for_connection(chatHistoryRequireConsent);
+	policy.set_policy_version(chatHistoryPolicyVersion);
+	policy.set_max_messages(chatHistoryMax);
+	policy.set_retention_days(chatHistoryRetention > 0 ? static_cast< unsigned int >(chatHistoryRetention) : 0);
+	if (!qsChatHistoryNotice.isEmpty()) {
+		policy.set_notice(u8(qsChatHistoryNotice));
+	}
+
+	sendMessage(user, policy);
+
+	user->chatHistoryPolicyVersion = chatHistoryPolicyVersion;
+	if (chatHistoryConsentRequired) {
+		user->chatHistoryConsent = ServerUser::ChatHistoryConsentState::AwaitingConsent;
+		user->chatHistoryConsentDeadline =
+			std::chrono::steady_clock::now() + std::chrono::seconds(chatHistoryConsentTimeout);
+	} else {
+		user->chatHistoryConsent         = ServerUser::ChatHistoryConsentState::NotRequired;
+		user->chatHistoryConsentDeadline = {};
+	}
+}
+
 void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg) {
 	ZoneScoped;
 
@@ -198,6 +246,18 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		}
 	}
 	MSG_SETUP(ServerUser::Connected);
+
+	// In strict mode only clients that negotiated support for chat history may connect. The check is
+	// done before assigning a session ID so that rejected connections don't consume one.
+	if (chatHistoryEnabled && chatHistoryRequireConsent && !isChatHistoryCapable(uSource)) {
+		log(uSource, "Rejecting connection as this server requires a client that supports chat history");
+		MumbleProto::Reject mpr;
+		mpr.set_reason("This server requires a client that supports chat history");
+		mpr.set_type(MumbleProto::Reject_RejectType_WrongVersion);
+		sendMessage(uSource, mpr);
+		uSource->rejectConnection();
+		return;
+	}
 
 	// As the first thing, assign a session ID to this client. Given that the client initiated
 	// the authentication procedure we can be sure that this is not just a random TCP connection.
@@ -587,6 +647,15 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	}
 
 	sendMessage(uSource, mpss);
+
+	// The policy is only sent to clients that negotiated support for chat history. Older clients
+	// never receive it and are never stored.
+	if (isChatHistoryCapable(uSource)) {
+		if (uSource->m_version < Mumble::Protocol::CHAT_HISTORY_MIN_CLIENT_VERSION) {
+			log(uSource, "Client negotiated chat history support but reports an older client version");
+		}
+		sendChatHistoryPolicy(uSource);
+	}
 
 	// Transmit user's listeners - this has to be done AFTER the server-sync message has been sent to uSource as the
 	// client may require its own session ID for processing the listeners properly.
@@ -1624,43 +1693,23 @@ void Server::msgChannelRemove(ServerUser *uSource, MumbleProto::ChannelRemove &m
 		return;
 	}
 
-	log(uSource, QString("Removed channel %1").arg(*c));
+	const QString channelDescription = *c;
 
-	removeChannel(c);
+	if (removeChannel(c, nullptr, uSource->qsName)) {
+		log(uSource, QString("Removed channel %1").arg(channelDescription));
+	}
 }
 
 void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) {
 	ZoneScoped;
 
 	MSG_SETUP(ServerUser::Authenticated);
-	QMutexLocker qml(&qmCache);
 
-	// For signal userTextMessage (RPC consumers)
-	TextMessage tm;
+	// The client-side ID is untrusted and must never end up in our history
+	msg.clear_message_id();
 
-	// List of users to route the message to
-	QSet< ServerUser * > users;
-	// List of channels used if dest is a tree of channels
-	QQueue< Channel * > q;
-
-	RATELIMIT(uSource);
-
-	int res = 0;
-	emit textMessageFilterSig(res, uSource, msg);
-	switch (res) {
-		// Accept
-		case 0:
-			// No-op.
-			break;
-		// Reject
-		case 1:
-			PERM_DENIED(uSource, uSource->cChannel, ChanACL::TextMessage);
-			return;
-		// Drop
-		case 2:
-			return;
-	}
-
+	// Validate before the message may be queued. This bounds what can end up in the queue and
+	// means that a message which is rejected anyway is rejected right away.
 	QString text = u8(msg.message());
 	bool changed = false;
 
@@ -1675,114 +1724,251 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 		msg.set_message(u8(text));
 	}
 
-	tm.qsText = text;
-
-	{ // Happy easter
-		char m[29] = { 0117, 0160, 0145, 0156, 040,  0164, 0150, 0145, 040, 0160, 0157, 0144, 040, 0142, 0141,
-					   0171, 040,  0144, 0157, 0157, 0162, 0163, 054,  040, 0110, 0101, 0114, 056, 0 };
-		if (msg.channel_id_size() == 1 && msg.channel_id(0) == 0 && msg.message() == m) {
-			PERM_DENIED_TYPE(H9K);
-			return;
-		}
+	// Never reorder messages: while one is still waiting for the rate limiter, everything the user
+	// sends afterwards has to be queued as well. The bucket is only consumed by the message that is
+	// actually processed.
+	if (!uSource->pendingTextMessages.empty() || uSource->leakyBucket.ratelimit(1)) {
+		queueTextMessage(uSource, msg);
+		return;
 	}
 
-	msg.set_actor(uSource->uiSession);
+	processTextMessage(uSource, msg);
+}
 
-	// Send the message to all users that are in (= have joined) OR are
-	// "listening" to channels to which the message has been directed to
+void Server::queueTextMessage(ServerUser *uSource, const MumbleProto::TextMessage &msg) {
+	ZoneScoped;
+
+	if (uSource->pendingTextMessages.size() >= maxQueuedTextMessages) {
+		// The queue is bounded, but a message must never be dropped without the sender noticing
+		MumbleProto::PermissionDenied denied;
+		denied.set_type(MumbleProto::PermissionDenied_DenyType_Text);
+		denied.set_session(uSource->uiSession);
+		denied.set_reason("Too many text messages in a row - the message was not sent");
+		sendMessage(uSource, denied);
+		log(uSource, QString("Rejecting text message as the rate limit queue is full (%1 messages pending)")
+						 .arg(static_cast< qulonglong >(maxQueuedTextMessages)));
+		return;
+	}
+
+	QueuedTextMessage queued;
+	queued.text = u8(msg.message());
 	for (int i = 0; i < msg.channel_id_size(); ++i) {
-		unsigned int id = msg.channel_id(i);
-
-		Channel *c = qhChannels.value(id);
-		if (!c) {
-			return;
-		}
-
-		if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
-			PERM_DENIED(uSource, c, ChanACL::TextMessage);
-			return;
-		}
-
-		// Users directly in that channel
-		for (User *p : c->qlUsers) {
-			users.insert(static_cast< ServerUser * >(p));
-		}
-
-		// Users only listening in that channel
-		for (unsigned int session : m_channelListenerManager.getListenersForChannel(c->iId)) {
-			ServerUser *currentUser = qhUsers.value(session);
-			if (currentUser) {
-				users.insert(currentUser);
-			}
-		}
-
-		tm.qlChannels.append(id);
+		queued.channelIDs.push_back(msg.channel_id(i));
 	}
-
-	// If the message is sent to trees of channels, find all affected channels
-	// and append them to q
 	for (int i = 0; i < msg.tree_id_size(); ++i) {
-		unsigned int id = msg.tree_id(i);
-
-		Channel *c = qhChannels.value(id);
-		if (!c) {
-			return;
-		}
-
-		if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
-			PERM_DENIED(uSource, c, ChanACL::TextMessage);
-			return;
-		}
-
-		q.enqueue(c);
-
-		tm.qlTrees.append(id);
+		queued.treeIDs.push_back(msg.tree_id(i));
+	}
+	for (int i = 0; i < msg.session_size(); ++i) {
+		queued.sessionIDs.push_back(msg.session(i));
 	}
 
-	// Go through all channels in q and append all users in those channels
-	// to the list of recipients
-	// Sub-channels are enqued so they are also checked by a later loop-iteration
-	while (!q.isEmpty()) {
-		Channel *c = q.dequeue();
-		if (ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
-			for (Channel *sub : c->qlChannels) {
-				q.enqueue(sub);
+	uSource->pendingTextMessages.push_back(std::move(queued));
+
+	if (!m_pendingTextTimer.isActive()) {
+		m_pendingTextTimer.start();
+	}
+}
+
+void Server::processTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) {
+	ZoneScoped;
+
+	assert(uSource->sState == ServerUser::Authenticated);
+
+	// For signal userTextMessage (RPC consumers)
+	TextMessage tm;
+
+	// Sessions of the users to route the message to. Session IDs are used instead of pointers so that
+	// they remain valid while the cache lock is not held.
+	QSet< unsigned int > recipientSessions;
+	// Channels the message should be stored for (excluding temporary channels)
+	std::vector< unsigned int > historyChannels;
+	std::unordered_set< unsigned int > seenHistoryChannels;
+
+	{
+		QMutexLocker qml(&qmCache);
+
+		// List of channels used if dest is a tree of channels
+		QQueue< Channel * > q;
+
+		int res = 0;
+		emit textMessageFilterSig(res, uSource, msg);
+		switch (res) {
+			// Accept
+			case 0:
+				// No-op.
+				break;
+			// Reject
+			case 1:
+				PERM_DENIED(uSource, uSource->cChannel, ChanACL::TextMessage);
+				return;
+			// Drop
+			case 2:
+				return;
+		}
+
+		tm.qsText = u8(msg.message());
+
+		{ // Happy easter
+			char m[29] = { 0117, 0160, 0145, 0156, 040,  0164, 0150, 0145, 040, 0160, 0157, 0144, 040, 0142, 0141,
+						   0171, 040,  0144, 0157, 0157, 0162, 0163, 054,  040, 0110, 0101, 0114, 056, 0 };
+			if (msg.channel_id_size() == 1 && msg.channel_id(0) == 0 && msg.message() == m) {
+				PERM_DENIED_TYPE(H9K);
+				return;
 			}
+		}
+
+		msg.set_actor(uSource->uiSession);
+
+		// Send the message to all users that are in (= have joined) OR are
+		// "listening" to channels to which the message has been directed to
+		for (int i = 0; i < msg.channel_id_size(); ++i) {
+			unsigned int id = msg.channel_id(i);
+
+			Channel *c = qhChannels.value(id);
+			if (!c) {
+				return;
+			}
+
+			if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+				PERM_DENIED(uSource, c, ChanACL::TextMessage);
+				return;
+			}
+
 			// Users directly in that channel
 			for (User *p : c->qlUsers) {
-				users.insert(static_cast< ServerUser * >(p));
+				recipientSessions.insert(p->uiSession);
 			}
+
 			// Users only listening in that channel
 			for (unsigned int session : m_channelListenerManager.getListenersForChannel(c->iId)) {
 				ServerUser *currentUser = qhUsers.value(session);
 				if (currentUser) {
-					users.insert(currentUser);
+					recipientSessions.insert(currentUser->uiSession);
+				}
+			}
+
+			if (!c->bTemporary && seenHistoryChannels.insert(c->iId).second) {
+				historyChannels.push_back(c->iId);
+			}
+
+			tm.qlChannels.append(id);
+		}
+
+		// If the message is sent to trees of channels, find all affected channels
+		// and append them to q
+		for (int i = 0; i < msg.tree_id_size(); ++i) {
+			unsigned int id = msg.tree_id(i);
+
+			Channel *c = qhChannels.value(id);
+			if (!c) {
+				return;
+			}
+
+			if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+				PERM_DENIED(uSource, c, ChanACL::TextMessage);
+				return;
+			}
+
+			q.enqueue(c);
+
+			tm.qlTrees.append(id);
+		}
+
+		// Go through all channels in q and append all users in those channels
+		// to the list of recipients
+		// Sub-channels are enqued so they are also checked by a later loop-iteration
+		while (!q.isEmpty()) {
+			Channel *c = q.dequeue();
+			if (ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+				for (Channel *sub : c->qlChannels) {
+					q.enqueue(sub);
+				}
+				// Users directly in that channel
+				for (User *p : c->qlUsers) {
+					recipientSessions.insert(p->uiSession);
+				}
+				// Users only listening in that channel
+				for (unsigned int session : m_channelListenerManager.getListenersForChannel(c->iId)) {
+					ServerUser *currentUser = qhUsers.value(session);
+					if (currentUser) {
+						recipientSessions.insert(currentUser->uiSession);
+					}
+				}
+
+				if (!c->bTemporary && seenHistoryChannels.insert(c->iId).second) {
+					historyChannels.push_back(c->iId);
+				}
+			}
+		}
+
+		// Go through all users the message is sent to directly
+		for (int i = 0; i < msg.session_size(); ++i) {
+			unsigned int session = msg.session(i);
+			ServerUser *u        = qhUsers.value(session);
+			if (u) {
+				if (!ChanACL::hasPermission(uSource, u->cChannel, ChanACL::TextMessage, &acCache)) {
+					PERM_DENIED(uSource, u->cChannel, ChanACL::TextMessage);
+					return;
+				}
+				recipientSessions.insert(u->uiSession);
+			}
+
+			tm.qlSessions.append(session);
+		}
+
+		// Remove the message sender from the list of users to send the message to
+		recipientSessions.remove(uSource->uiSession);
+	}
+
+	// Persist the message (if applicable) only after the cache lock has been released. Storing is
+	// best-effort: a database failure must never prevent the message from being delivered.
+	const bool participating = chatHistoryEnabled && !chatHistoryWriteSuspended
+							   && meta->assumedDBState == DBState::Normal
+							   && (uSource->chatHistoryConsent == ServerUser::ChatHistoryConsentState::Consented
+								   || uSource->chatHistoryConsent == ServerUser::ChatHistoryConsentState::NotRequired);
+
+	if (participating && !historyChannels.empty()) {
+		if (historyChannels.size() > chatHistoryMaxChannels) {
+			qWarning("Not storing chat message for %zu channels as this exceeds the configured limit of %u",
+					 historyChannels.size(), chatHistoryMaxChannels);
+		} else {
+			::msdb::DBChatMessage message;
+			message.serverID = iServerNum;
+			if (uSource->iId >= 0) {
+				message.senderID = static_cast< unsigned int >(uSource->iId);
+			}
+			if (!uSource->qsHash.isEmpty()) {
+				message.senderHash = uSource->qsHash.toStdString();
+			}
+			message.senderName = uSource->qsName.toStdString();
+			message.message    = tm.qsText.toStdString();
+			message.createdAt  = std::chrono::system_clock::now();
+
+			try {
+				const unsigned int messageID = m_dbWrapper.storeChatMessage(message, historyChannels);
+				msg.set_message_id(messageID);
+				chatHistoryWriteFailures = 0;
+			} catch (const std::exception &e) {
+				chatHistoryWriteFailures++;
+
+				qWarning("Failed to store chat message in history: %s", e.what());
+
+				if (chatHistoryWriteFailures >= 5) {
+					chatHistoryWriteSuspended = true;
+					// Don't use Server::log() here: it writes to the database and might fail as well
+					qWarning("Suspending chat history storage on server %u after %u consecutive database errors",
+							 iServerNum, chatHistoryWriteFailures);
 				}
 			}
 		}
 	}
 
-	// Go through all users the message is sent to directly
-	for (int i = 0; i < msg.session_size(); ++i) {
-		unsigned int session = msg.session(i);
-		ServerUser *u        = qhUsers.value(session);
+	// Re-resolve the recipients by session ID and actually send the original message to them
+	for (unsigned int session : recipientSessions) {
+		ServerUser *u = qhUsers.value(session);
 		if (u) {
-			if (!ChanACL::hasPermission(uSource, u->cChannel, ChanACL::TextMessage, &acCache)) {
-				PERM_DENIED(uSource, u->cChannel, ChanACL::TextMessage);
-				return;
-			}
-			users.insert(u);
+			sendMessage(u, msg);
 		}
-
-		tm.qlSessions.append(session);
-	}
-
-	// Remove the message sender from the list of users to send the message to
-	users.remove(uSource);
-
-	// Actually send the original message to the affected users
-	for (ServerUser *u : users) {
-		sendMessage(u, msg);
 	}
 
 	// Emit the signal for RPC consumers
@@ -2610,6 +2796,175 @@ void Server::msgPluginDataTransmission(ServerUser *uSource, MumbleProto::PluginD
 			// We can simply redirect the message we have received to the clients
 			sendMessage(receiver, msg);
 		}
+	}
+}
+
+void Server::msgServerFeatures(ServerUser *, MumbleProto::ServerFeatures &) {
+}
+
+void Server::msgChatHistoryPolicy(ServerUser *, MumbleProto::ChatHistoryPolicy &) {
+}
+
+void Server::msgChatHistoryResponse(ServerUser *, MumbleProto::ChatHistoryResponse &) {
+}
+
+void Server::msgClientFeatures(ServerUser *uSource, MumbleProto::ClientFeatures &msg) {
+	ZoneScoped;
+
+	RATELIMIT(uSource);
+
+	const bool protocolSupported = msg.protocol_version() == Mumble::Protocol::FEATURE_PROTOCOL_VERSION;
+
+	uSource->featuresReceived = true;
+	uSource->clientFeatures   = protocolSupported ? msg.supported_features() : 0;
+
+	std::uint64_t enabledFeatures = 0;
+	if (protocolSupported && chatHistoryEnabled && isChatHistoryCapable(uSource)) {
+		enabledFeatures |= chatHistoryFeatureMask;
+	}
+
+	MumbleProto::ServerFeatures response;
+	response.set_protocol_version(Mumble::Protocol::FEATURE_PROTOCOL_VERSION);
+	response.set_enabled_features(enabledFeatures);
+	if (!protocolSupported) {
+		response.set_reason("Unsupported feature protocol version");
+	}
+	sendMessage(uSource, response);
+
+	if (uSource->sState != ServerUser::Authenticated) {
+		return;
+	}
+
+	if (enabledFeatures & chatHistoryFeatureMask) {
+		// Don't repeat the policy if this session has already answered it
+		if (uSource->chatHistoryConsent == ServerUser::ChatHistoryConsentState::NotParticipating) {
+			sendChatHistoryPolicy(uSource);
+		}
+	} else {
+		uSource->chatHistoryConsent         = ServerUser::ChatHistoryConsentState::NotParticipating;
+		uSource->chatHistoryPolicyVersion   = 0;
+		uSource->chatHistoryConsentDeadline = {};
+	}
+}
+
+void Server::msgChatHistoryConsent(ServerUser *uSource, MumbleProto::ChatHistoryConsent &msg) {
+	ZoneScoped;
+
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (!chatHistoryEnabled || !isChatHistoryCapable(uSource)
+		|| uSource->chatHistoryConsent != ServerUser::ChatHistoryConsentState::AwaitingConsent) {
+		return;
+	}
+
+	if (msg.policy_version() != chatHistoryPolicyVersion) {
+		// The client answered a different version of the policy, so ask again with the current one
+		sendChatHistoryPolicy(uSource);
+		return;
+	}
+
+	if (msg.accepted()) {
+		uSource->chatHistoryConsent         = ServerUser::ChatHistoryConsentState::Consented;
+		uSource->chatHistoryConsentDeadline = {};
+		return;
+	}
+
+	uSource->chatHistoryConsent         = ServerUser::ChatHistoryConsentState::Declined;
+	uSource->chatHistoryConsentDeadline = {};
+
+	if (chatHistoryRequireConsent) {
+		log(uSource, "Disconnecting user as they declined the chat history policy required by this server");
+		uSource->rejectConnection();
+	} else {
+		log(uSource, "User declined the chat history policy - chat history is disabled for this session");
+	}
+}
+
+void Server::msgChatHistoryRequest(ServerUser *uSource, MumbleProto::ChatHistoryRequest &msg) {
+	ZoneScoped;
+
+	MSG_SETUP(ServerUser::Authenticated);
+
+	auto respond = [this, uSource, &msg](MumbleProto::ChatHistoryResult result) {
+		MumbleProto::ChatHistoryResponse response;
+		response.set_channel_id(msg.channel_id());
+		response.set_result(result);
+		sendMessage(uSource, response);
+	};
+
+	if (!chatHistoryEnabled || !isChatHistoryCapable(uSource)) {
+		respond(MumbleProto::CHAT_HISTORY_DISABLED);
+		return;
+	}
+
+	if (uSource->chatHistoryConsent == ServerUser::ChatHistoryConsentState::AwaitingConsent
+		|| uSource->chatHistoryConsent == ServerUser::ChatHistoryConsentState::Declined) {
+		respond(MumbleProto::CHAT_HISTORY_CONSENT_REQUIRED);
+		return;
+	}
+
+	if (uSource->chatHistoryConsent != ServerUser::ChatHistoryConsentState::Consented
+		&& uSource->chatHistoryConsent != ServerUser::ChatHistoryConsentState::NotRequired) {
+		respond(MumbleProto::CHAT_HISTORY_DISABLED);
+		return;
+	}
+
+	Channel *channel = qhChannels.value(msg.channel_id());
+	if (!channel) {
+		respond(MumbleProto::CHAT_HISTORY_INVALID_CHANNEL);
+		return;
+	}
+
+	bool canEnter       = false;
+	bool canReadHistory = false;
+	{
+		QMutexLocker qml(&qmCache);
+		canEnter       = ChanACL::hasPermission(uSource, channel, ChanACL::Enter, &acCache);
+		canReadHistory = ChanACL::hasPermission(uSource, channel, ChanACL::TextMessageHistory, &acCache);
+	}
+
+	if (!canEnter) {
+		PERM_DENIED(uSource, channel, ChanACL::Enter);
+		return;
+	}
+	if (!canReadHistory) {
+		PERM_DENIED(uSource, channel, ChanACL::TextMessageHistory);
+		return;
+	}
+
+	if (uSource->chatHistoryRequestBucket.ratelimit(1) || chatHistoryRequestBudget.ratelimit(1)) {
+		respond(MumbleProto::CHAT_HISTORY_RATE_LIMITED);
+		return;
+	}
+
+	const unsigned int limit =
+		msg.limit() == 0 ? chatHistoryMax : std::min< unsigned int >(msg.limit(), chatHistoryMax);
+	const unsigned int maxID    = std::numeric_limits< unsigned int >::max();
+	const unsigned int beforeID = msg.before_id() > maxID ? maxID : static_cast< unsigned int >(msg.before_id());
+
+	try {
+		const ::msdb::ChatHistoryPage page = m_dbWrapper.getChatHistory(iServerNum, channel->iId, beforeID, limit);
+
+		MumbleProto::ChatHistoryResponse response;
+		response.set_channel_id(channel->iId);
+		response.set_result(MumbleProto::CHAT_HISTORY_OK);
+		response.set_has_more(page.hasMore);
+
+		for (const ::msdb::DBChatMessage &message : page.messages) {
+			MumbleProto::ChatHistoryEntry *entry = response.add_messages();
+			entry->set_id(message.id);
+			if (message.senderID) {
+				entry->set_sender_id(message.senderID.value());
+			}
+			entry->set_sender_name(message.senderName);
+			entry->set_timestamp(static_cast< std::uint64_t >(::msdb::toEpochSeconds(message.createdAt)));
+			entry->set_message(message.message);
+		}
+
+		sendMessage(uSource, response);
+	} catch (const std::exception &e) {
+		qWarning("Failed to query chat history of channel %u on server %u: %s", channel->iId, iServerNum, e.what());
+		respond(MumbleProto::CHAT_HISTORY_INTERNAL_ERROR);
 	}
 }
 

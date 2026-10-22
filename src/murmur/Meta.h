@@ -115,6 +115,16 @@ public:
 	unsigned int iPluginMessageLimit;
 	unsigned int iPluginMessageBurst;
 
+	bool chatHistoryEnabled;
+	QString chatHistoryConsentMode;
+	bool chatHistoryRequireConsent;
+	unsigned int chatHistoryMax;
+	unsigned int chatHistoryMaxChannels;
+	unsigned int chatHistoryPolicyVersion;
+	QString qsChatHistoryNotice;
+	int chatHistoryRetention;
+	int chatHistoryConsentTimeout;
+
 	bool broadcastListenerVolumeAdjustments;
 
 	QSslCertificate qscCert;

@@ -71,6 +71,13 @@ class ClientUser;
 class Channel;
 class LogMessage;
 
+/// A single chat-history message to be displayed in the log.
+struct ChatHistoryLogEntry {
+	QDateTime timestamp;
+	/// HTML representation of the message, using the same format as for live messages
+	QString console;
+};
+
 class Log : public QObject {
 	friend class LogConfig;
 
@@ -137,6 +144,13 @@ protected:
 	QDate qdDate;
 	static const QStringList allowedSchemes();
 
+	/// Whether a chat-history block is currently displayed in the log
+	bool m_chatHistoryValid = false;
+	QTextCursor m_chatHistoryStart;
+	QTextCursor m_chatHistoryEnd;
+
+	void clearChatHistoryBlock();
+
 public:
 	Log(QObject *p = nullptr);
 	QString msgName(MsgType t) const;
@@ -148,6 +162,13 @@ public:
 	static QString msgColor(const QString &text, LogColorType t);
 	static QString formatClientUser(ClientUser *cu, LogColorType t, const QString &displayName = QString());
 	static QString formatChannel(::Channel *c);
+	/// Replaces the chat-history block in the log with the given entries.
+	///
+	/// The block is placed where the previous block was or at the end of the log if there was none.
+	/// This does not trigger any notifications or TTS output.
+	void setChatHistory(const QString &title, const QVector< ChatHistoryLogEntry > &entries);
+	/// Removes the chat-history block from the log (if any)
+	void clearChatHistory();
 	/// Either defers the LogMessage or defers it, depending on whether Global::l is created already
 	/// (if it is, it is used to directly log the msg)
 	static void logOrDefer(Log::MsgType mt, const QString &console, const QString &terse = QString(),

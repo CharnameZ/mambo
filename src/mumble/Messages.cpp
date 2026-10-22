@@ -14,6 +14,7 @@
 #include "AudioWizard.h"
 #include "BanEditor.h"
 #include "Channel.h"
+#include "ChatHistoryController.h"
 #include "ConnectDialog.h"
 #include "Connection.h"
 #include "Database.h"
@@ -400,6 +401,7 @@ void MainWindow::msgUserState(const MumbleProto::UserState &msg) {
 				if (pDst == pSelf) {
 					Global::get().mw->updateChatBar();
 					qsDesiredChannel = channel->getPath();
+					emit selfChannelChanged(channel);
 				}
 
 				if (pDst == pSelf) {
@@ -1011,6 +1013,11 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	if (pSrc && pSrc->bLocalIgnore)
 		return;
 
+	if (msg.has_message_id() && m_chatHistoryController && m_chatHistoryController->isKnownMessage(msg.message_id())) {
+		// This message is already displayed as part of the chat history
+		return;
+	}
+
 	const QString &plainName = pSrc ? pSrc->qsName : tr("Server", "message from");
 	const QString &name      = pSrc ? Log::formatClientUser(pSrc, Log::Source) : tr("Server", "message from");
 	bool privateMessage      = false;
@@ -1042,6 +1049,10 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	Global::get().l->log(privateMessage ? Log::PrivateTextMessage : Log::TextMessage,
 						 tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())), tr("Message from %1").arg(plainName),
 						 false, overrideTTS, pSrc ? pSrc->bLocalIgnoreTTS : false);
+
+	if (msg.has_message_id() && m_chatHistoryController) {
+		m_chatHistoryController->noteRealtimeMessage(msg.message_id());
+	}
 }
 
 /// This message is being received when the server informs the client about the access control list (ACL) for
@@ -1293,6 +1304,36 @@ void MainWindow::msgPluginDataTransmission(const MumbleProto::PluginDataTransmis
 		// As long as above assertion is true, we are only casting away the sign, which is fine
 		Global::get().pluginManager->on_receiveData(sender, reinterpret_cast< const uint8_t * >(msgData.c_str()),
 													msgData.size(), msg.dataid().c_str());
+	}
+}
+
+void MainWindow::msgClientFeatures(const MumbleProto::ClientFeatures &) {
+	// Clients don't receive this message
+}
+
+void MainWindow::msgServerFeatures(const MumbleProto::ServerFeatures &msg) {
+	if (m_chatHistoryController) {
+		m_chatHistoryController->handleServerFeatures(msg);
+	}
+}
+
+void MainWindow::msgChatHistoryPolicy(const MumbleProto::ChatHistoryPolicy &msg) {
+	if (m_chatHistoryController) {
+		m_chatHistoryController->handlePolicy(msg);
+	}
+}
+
+void MainWindow::msgChatHistoryConsent(const MumbleProto::ChatHistoryConsent &) {
+	// Clients don't receive this message
+}
+
+void MainWindow::msgChatHistoryRequest(const MumbleProto::ChatHistoryRequest &) {
+	// Clients don't receive this message
+}
+
+void MainWindow::msgChatHistoryResponse(const MumbleProto::ChatHistoryResponse &msg) {
+	if (m_chatHistoryController) {
+		m_chatHistoryController->handleResponse(msg);
 	}
 }
 

@@ -151,6 +151,16 @@ MetaParams::MetaParams() {
 	iPluginMessageLimit = 4;
 	iPluginMessageBurst = 15;
 
+	chatHistoryEnabled        = false;
+	chatHistoryConsentMode    = QStringLiteral("required");
+	chatHistoryRequireConsent = false;
+	chatHistoryMax            = 50;
+	chatHistoryMaxChannels    = 100;
+	chatHistoryPolicyVersion  = 1;
+	qsChatHistoryNotice       = QString();
+	chatHistoryRetention      = 0;
+	chatHistoryConsentTimeout = 300;
+
 	broadcastListenerVolumeAdjustments = false;
 
 	qsCiphers = MumbleSSL::defaultOpenSSLCipherString();
@@ -424,6 +434,16 @@ void MetaParams::read(QString fname) {
 	iPluginMessageLimit = typeCheckedFromSettings< unsigned int >("pluginmessagelimit", 4);
 	iPluginMessageBurst = typeCheckedFromSettings< unsigned int >("pluginmessageburst", 15);
 
+	chatHistoryEnabled        = typeCheckedFromSettings("chathistory", chatHistoryEnabled);
+	chatHistoryConsentMode    = qsSettings->value("chathistoryconsent", chatHistoryConsentMode).toString();
+	chatHistoryRequireConsent = typeCheckedFromSettings("chathistoryrequireconsent", chatHistoryRequireConsent);
+	chatHistoryMax            = typeCheckedFromSettings("chathistorymax", chatHistoryMax);
+	chatHistoryMaxChannels    = typeCheckedFromSettings("chathistorymaxchannels", chatHistoryMaxChannels);
+	chatHistoryPolicyVersion  = typeCheckedFromSettings("chathistorypolicyversion", chatHistoryPolicyVersion);
+	qsChatHistoryNotice       = typeCheckedFromSettings("chathistorynotice", qsChatHistoryNotice);
+	chatHistoryRetention      = typeCheckedFromSettings("chathistoryretention", chatHistoryRetention);
+	chatHistoryConsentTimeout = typeCheckedFromSettings("chathistoryconsenttimeout", chatHistoryConsentTimeout);
+
 	broadcastListenerVolumeAdjustments = typeCheckedFromSettings("broadcastlistenervolumeadjustments", false);
 
 	bool bObfuscate = typeCheckedFromSettings("obfuscate", false);
@@ -481,6 +501,16 @@ void MetaParams::read(QString fname) {
 	qmConfig.insert(QLatin1String("opusthreshold"), QString::number(iOpusThreshold));
 	qmConfig.insert(QLatin1String("channelnestinglimit"), QString::number(iChannelNestingLimit));
 	qmConfig.insert(QLatin1String("channelcountlimit"), QString::number(iChannelCountLimit));
+	qmConfig.insert(QLatin1String("chathistory"), chatHistoryEnabled ? QLatin1String("true") : QLatin1String("false"));
+	qmConfig.insert(QLatin1String("chathistoryconsent"), chatHistoryConsentMode);
+	qmConfig.insert(QLatin1String("chathistoryrequireconsent"),
+					chatHistoryRequireConsent ? QLatin1String("true") : QLatin1String("false"));
+	qmConfig.insert(QLatin1String("chathistorymax"), QString::number(chatHistoryMax));
+	qmConfig.insert(QLatin1String("chathistorymaxchannels"), QString::number(chatHistoryMaxChannels));
+	qmConfig.insert(QLatin1String("chathistorypolicyversion"), QString::number(chatHistoryPolicyVersion));
+	qmConfig.insert(QLatin1String("chathistorynotice"), qsChatHistoryNotice);
+	qmConfig.insert(QLatin1String("chathistoryretention"), QString::number(chatHistoryRetention));
+	qmConfig.insert(QLatin1String("chathistoryconsenttimeout"), QString::number(chatHistoryConsentTimeout));
 	qmConfig.insert(QLatin1String("sslCiphers"), qsCiphers);
 	qmConfig.insert(QLatin1String("sslDHParams"), QString::fromLatin1(qbaDHParams.constData()));
 }

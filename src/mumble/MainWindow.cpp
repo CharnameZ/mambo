@@ -14,6 +14,7 @@
 #include "BanEditor.h"
 #include "Cert.h"
 #include "Channel.h"
+#include "ChatHistoryController.h"
 #include "ConnectDialog.h"
 #include "Connection.h"
 #include "Database.h"
@@ -80,6 +81,7 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollBar>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QToolTip>
 #include <QtWidgets/QWhatsThis>
 
@@ -173,6 +175,15 @@ MainWindow::MainWindow(QWidget *p)
 	createActions();
 	setupUi(this);
 	setupGui();
+
+	m_chatHistoryController = new ChatHistoryController(this);
+	QObject::connect(m_qbLoadEarlier, &QToolButton::clicked, m_chatHistoryController,
+					 &ChatHistoryController::loadEarlier);
+	QObject::connect(this, &MainWindow::serverSynchronized, m_chatHistoryController,
+					 &ChatHistoryController::onServerSynchronized);
+	QObject::connect(this, &MainWindow::selfChannelChanged, m_chatHistoryController,
+					 &ChatHistoryController::onSelfChannelChanged);
+
 	connect(qmUser, SIGNAL(aboutToShow()), this, SLOT(qmUser_aboutToShow()));
 	connect(qmChannel, SIGNAL(aboutToShow()), this, SLOT(qmChannel_aboutToShow()));
 	connect(qmListener, SIGNAL(aboutToShow()), this, SLOT(qmListener_aboutToShow()));
@@ -491,6 +502,16 @@ void MainWindow::setupGui() {
 
 	qteLog->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
 	qteLog->document()->setDefaultStyleSheet(qApp->styleSheet());
+
+	// The button floats above the log's viewport instead of taking part in a layout so that the
+	// dock's widget (qteLog) doesn't have to be reparented
+	m_qbLoadEarlier = new QToolButton(qteLog->viewport());
+	m_qbLoadEarlier->setText(tr("Load earlier messages"));
+	m_qbLoadEarlier->setToolButtonStyle(Qt::ToolButtonTextOnly);
+	m_qbLoadEarlier->setAutoRaise(true);
+	m_qbLoadEarlier->setVisible(false);
+	m_qbLoadEarlier->setAccessibleName(tr("Load earlier messages"));
+	m_qbLoadEarlier->setWhatsThis(tr("Loads older messages from this channel's chat history."));
 
 	pmModel = new UserModel(qtvUsers);
 	qtvUsers->setModel(pmModel);

@@ -7,6 +7,7 @@
 #define MUMBLE_SERVER_DBWRAPPER_H_
 
 #include "NonCopyable.h"
+#include "murmur/database/ChatHistoryStore.h"
 #include "murmur/database/DBChannel.h"
 #include "murmur/database/DBLogEntry.h"
 #include "murmur/database/DBUserData.h"
@@ -149,6 +150,23 @@ public:
 	unsigned int getNextAvailableUserID(unsigned int serverID);
 
 	void setUserData(unsigned int serverID, unsigned int userID, const ::mumble::server::db::DBUserData &data);
+
+	// Chat history
+	unsigned int storeChatMessage(const ::mumble::server::db::DBChatMessage &message,
+								  const std::vector< unsigned int > &channelIDs);
+	::mumble::server::db::ChatHistoryPage getChatHistory(unsigned int serverID, unsigned int channelID,
+														 unsigned int beforeID, unsigned int limit);
+	::mumble::server::db::ChatHistoryPage getArchivedChatHistory(unsigned int archiveID, unsigned int beforeID,
+																 unsigned int limit);
+	std::vector< unsigned int >
+		archiveAndDeleteChannelTree(unsigned int serverID,
+									const std::vector<::mumble::server::db::DBArchivedChannel > &channels);
+	unsigned int archiveAndDeleteChannel(unsigned int serverID, unsigned int channelID, const std::string &channelName,
+										 const std::string &archivedBy);
+	void clearChatHistory(unsigned int serverID, unsigned int channelID);
+	void clearAllChatHistory(unsigned int serverID);
+	void deleteArchivedChannel(unsigned int archiveID);
+	std::vector<::mumble::server::db::DBArchivedChannel > getArchivedChannels(unsigned int serverID);
 
 	nlohmann::json exportDBToJSON();
 

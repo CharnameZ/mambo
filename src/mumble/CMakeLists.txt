@@ -127,6 +127,8 @@ set(MUMBLE_SOURCES
 	"Cert.h"
 	"Cert.ui"
 	"ChannelFilterMode.h"
+	"ChatHistoryController.cpp"
+	"ChatHistoryController.h"
 	"ClientUser.cpp"
 	"ClientUser.h"
 	"ConfigDialog.cpp"

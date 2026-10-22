@@ -1584,6 +1584,124 @@ void DBWrapper::setUserData(unsigned int serverID, unsigned int userID, const ::
 	WRAPPER_END
 }
 
+unsigned int DBWrapper::storeChatMessage(const ::msdb::DBChatMessage &message,
+										 const std::vector< unsigned int > &channelIDs) {
+	WRAPPER_BEGIN
+
+	assertValidID(message.serverID);
+	assert(!channelIDs.empty());
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	return store.storeMessage(message, channelIDs);
+
+	WRAPPER_END
+}
+
+::msdb::ChatHistoryPage DBWrapper::getChatHistory(unsigned int serverID, unsigned int channelID, unsigned int beforeID,
+												  unsigned int limit) {
+	WRAPPER_BEGIN
+
+	assertValidID(serverID);
+	assertValidID(channelID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	return store.getHistory(serverID, channelID, beforeID, limit);
+
+	WRAPPER_END
+}
+
+::msdb::ChatHistoryPage DBWrapper::getArchivedChatHistory(unsigned int archiveID, unsigned int beforeID,
+														  unsigned int limit) {
+	WRAPPER_BEGIN
+
+	assertValidID(archiveID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	return store.getArchivedHistory(archiveID, beforeID, limit);
+
+	WRAPPER_END
+}
+
+std::vector< unsigned int >
+	DBWrapper::archiveAndDeleteChannelTree(unsigned int serverID,
+										   const std::vector<::msdb::DBArchivedChannel > &channels) {
+	WRAPPER_BEGIN
+
+	assertValidID(serverID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	return store.archiveAndDeleteChannelTree(serverID, channels);
+
+	WRAPPER_END
+}
+
+unsigned int DBWrapper::archiveAndDeleteChannel(unsigned int serverID, unsigned int channelID,
+												const std::string &channelName, const std::string &archivedBy) {
+	WRAPPER_BEGIN
+
+	assertValidID(serverID);
+	assertValidID(channelID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	return store.archiveAndDeleteChannel(serverID, channelID, channelName, archivedBy);
+
+	WRAPPER_END
+}
+
+void DBWrapper::clearChatHistory(unsigned int serverID, unsigned int channelID) {
+	WRAPPER_BEGIN
+
+	assertValidID(serverID);
+	assertValidID(channelID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	store.clearChannelHistory(serverID, channelID);
+
+	WRAPPER_END
+}
+
+void DBWrapper::clearAllChatHistory(unsigned int serverID) {
+	WRAPPER_BEGIN
+
+	assertValidID(serverID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	store.clearServerHistory(serverID);
+
+	WRAPPER_END
+}
+
+void DBWrapper::deleteArchivedChannel(unsigned int archiveID) {
+	WRAPPER_BEGIN
+
+	assertValidID(archiveID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	store.deleteArchive(archiveID);
+
+	WRAPPER_END
+}
+
+std::vector<::msdb::DBArchivedChannel > DBWrapper::getArchivedChannels(unsigned int serverID) {
+	WRAPPER_BEGIN
+
+	assertValidID(serverID);
+
+	::msdb::ChatHistoryStore store(m_serverDB);
+
+	return store.getArchivedChannels(serverID);
+
+	WRAPPER_END
+}
+
 nlohmann::json DBWrapper::exportDBToJSON() {
 	WRAPPER_BEGIN
 

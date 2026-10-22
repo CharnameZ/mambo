@@ -13,6 +13,7 @@
 #include "GlobalShortcutTypes.h"
 
 #include <QSettings>
+#include <QtCore/QDateTime>
 #include <QtCore/QStandardPaths>
 #include <QtSql/QSqlError>
 #include <QtSql/QSqlQuery>
@@ -239,6 +240,11 @@ Database::Database(const QString &dbname) {
 	query.exec(QLatin1String("ALTER TABLE `filtered_channels` ADD COLUMN `filter_mode` INTEGER DEFAULT ")
 			   + QString::number(
 				   static_cast< int >(ChannelFilterMode::HIDE))); // Upgrade path, failing this query is not noteworthy
+
+	execQueryAndLogFailure(
+		query, QLatin1String("CREATE TABLE IF NOT EXISTS `chat_history_consent` (`server_digest` BLOB NOT NULL, "
+							 "`policy_version` INTEGER NOT NULL, `accepted_at` INTEGER NOT NULL, "
+							 "PRIMARY KEY (`server_digest`, `policy_version`))"));
 
 	execQueryAndLogFailure(query, QLatin1String("CREATE TABLE IF NOT EXISTS `pingcache` (`id` INTEGER PRIMARY KEY "
 												"AUTOINCREMENT, `hostname` TEXT, `port` INTEGER, `ping` INTEGER)"));
@@ -483,6 +489,30 @@ void Database::setChannelFilterMode(const QByteArray &server_cert_digest, const 
 	query.bindValue(0, server_cert_digest);
 	query.bindValue(1, channel_id);
 
+	execQueryAndLogFailure(query);
+}
+
+bool Database::hasChatHistoryConsent(const QByteArray &server_digest, const unsigned int policy_version) {
+	QSqlQuery query(db);
+
+	query.prepare(QLatin1String("SELECT 1 FROM `chat_history_consent` WHERE `server_digest` = ? AND "
+								"`policy_version` = ?"));
+	query.addBindValue(server_digest);
+	query.addBindValue(policy_version);
+	execQueryAndLogFailure(query);
+
+	return query.first();
+}
+
+void Database::setChatHistoryConsent(const QByteArray &server_digest, const unsigned int policy_version) {
+	QSqlQuery query(db);
+
+	query.prepare(
+		QLatin1String("REPLACE INTO `chat_history_consent` (`server_digest`, `policy_version`, `accepted_at`) "
+					  "VALUES (?, ?, ?)"));
+	query.addBindValue(server_digest);
+	query.addBindValue(policy_version);
+	query.addBindValue(QDateTime::currentSecsSinceEpoch());
 	execQueryAndLogFailure(query);
 }
 

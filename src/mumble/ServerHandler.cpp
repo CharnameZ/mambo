@@ -44,6 +44,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <span>
 
 #ifdef Q_OS_WIN
@@ -836,6 +837,13 @@ void ServerHandler::serverConnectionConnected() {
 	}
 
 	changeState(ServerHandlerState::ConnectionEstablished);
+
+	MumbleProto::ClientFeatures features;
+	features.set_protocol_version(Mumble::Protocol::FEATURE_PROTOCOL_VERSION);
+	features.set_supported_features(static_cast< std::uint64_t >(Mumble::Protocol::Feature::ChatHistory));
+	features.set_client_version(Version::get());
+	features.set_client_release(u8(Version::getRelease()));
+	sendMessage(features);
 
 	MumbleProto::Version mpv;
 	mpv.set_release(u8(Version::getRelease()));

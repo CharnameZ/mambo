@@ -288,6 +288,9 @@ message TextMessage {
 	repeated uint32 tree_id = 4;
 	// The UTF-8 encoded message. May be HTML if the server allows.
 	required string message = 5;
+	// The ID assigned to this message by the server if it was stored in the
+	// chat history. Empty if the message wasn't stored.
+	optional uint64 message_id = 6;
 }
 
 message PermissionDenied {
@@ -636,4 +639,95 @@ message PluginDataTransmission {
 	// The ID of the sent data. This will be used by plugins to check whether they will
 	// process it or not
 	optional string dataID = 4;
+}
+
+// Features a client or server can support. The values are bit positions.
+enum Feature {
+	// Support for the chat history messages and UI
+	FEATURE_CHAT_HISTORY = 1;
+}
+
+// Sent by a client to announce the features it supports.
+message ClientFeatures {
+	// Version of the feature negotiation protocol. Currently 1.
+	optional uint32 protocol_version = 1 [default = 1];
+	// Bitmask of supported features (see Feature)
+	optional uint64 supported_features = 2 [default = 0];
+	// Client version using Mumble's internal 64-bit version encoding
+	optional uint64 client_version = 3;
+	// Optional client release string, only used for logging
+	optional string client_release = 4;
+}
+
+// Sent by the server in response to ClientFeatures.
+message ServerFeatures {
+	// Version of the feature negotiation protocol. Currently 1.
+	optional uint32 protocol_version = 1 [default = 1];
+	// Bitmask of features that are enabled for this connection
+	optional uint64 enabled_features = 2 [default = 0];
+	// Optional reason/explanation, only used for logging and diagnostics
+	optional string reason = 3;
+}
+
+enum ChatHistoryResult {
+	CHAT_HISTORY_OK               = 0;
+	CHAT_HISTORY_DISABLED         = 1;
+	CHAT_HISTORY_CONSENT_REQUIRED = 2;
+	CHAT_HISTORY_INVALID_CHANNEL  = 3;
+	CHAT_HISTORY_RATE_LIMITED     = 4;
+	CHAT_HISTORY_INTERNAL_ERROR   = 5;
+}
+
+// Sent by the server to describe the chat history policy of the server.
+message ChatHistoryPolicy {
+	// Whether chat history is enabled on the server
+	optional bool enabled = 1 [default = false];
+	// Whether the client has to explicitly consent
+	optional bool consent_required = 2 [default = true];
+	// Whether clients have to support and accept chat history in order to connect
+	optional bool required_for_connection = 3 [default = false];
+	// Policy version; the client has to ask again if this changes
+	optional uint32 policy_version = 4 [default = 1];
+	// Maximum number of messages a client may request at once
+	optional uint32 max_messages = 5 [default = 50];
+	// Number of days messages are retained; 0 means forever
+	optional uint32 retention_days = 6 [default = 0];
+	// Optional administrator-provided notice
+	optional string notice = 7;
+}
+
+// Sent by a client in response to a ChatHistoryPolicy.
+message ChatHistoryConsent {
+	optional uint32 policy_version = 1;
+	optional bool accepted = 2;
+}
+
+// Sent by a client to request a page of a channel's chat history.
+message ChatHistoryRequest {
+	// The channel to fetch the history for
+	optional uint32 channel_id = 1;
+	// Only return messages with an ID smaller than this; 0 means starting at the newest
+	optional uint64 before_id = 2 [default = 0];
+	// Number of messages to return; 0 means using the server's default
+	optional uint32 limit = 3 [default = 0];
+}
+
+message ChatHistoryEntry {
+	optional uint64 id = 1;
+	// Registered user ID; 0 for anonymous users
+	optional uint32 sender_id = 2 [default = 0];
+	// Name of the sender at the time the message was sent
+	optional string sender_name = 3;
+	// Unix timestamp in seconds
+	optional uint64 timestamp = 4;
+	// Same representation as TextMessage.message
+	optional string message = 5;
+}
+
+// Sent by the server in response to a ChatHistoryRequest.
+message ChatHistoryResponse {
+	optional uint32 channel_id = 1;
+	optional ChatHistoryResult result = 2 [default = CHAT_HISTORY_OK];
+	optional bool has_more = 3 [default = false];
+	repeated ChatHistoryEntry messages = 4;
 }

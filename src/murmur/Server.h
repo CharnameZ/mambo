@@ -21,6 +21,7 @@
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
+#include "ServerUser.h"
 #include "Timer.h"
 #include "User.h"
 #include "Version.h"
@@ -158,6 +159,22 @@ public:
 
 	bool broadcastListenerVolumeAdjustments;
 
+	bool chatHistoryEnabled               = false;
+	bool chatHistoryConsentRequired       = true;
+	bool chatHistoryRequireConsent        = false;
+	unsigned int chatHistoryMax           = 50;
+	unsigned int chatHistoryMaxChannels   = 100;
+	unsigned int chatHistoryPolicyVersion = 1;
+	QString qsChatHistoryNotice;
+	int chatHistoryRetention      = 0;
+	int chatHistoryConsentTimeout = 300;
+
+	unsigned int chatHistoryWriteFailures = 0;
+	bool chatHistoryWriteSuspended        = false;
+
+	/// Global query budget for chat history requests (50 requests per second)
+	LeakyBucket chatHistoryRequestBudget{ 50, 50 };
+
 	Version::full_t m_suggestVersion;
 
 	std::optional< bool > m_suggestPositional;
@@ -199,6 +216,11 @@ public:
 
 	void readParams();
 
+	/**
+	 * Sends the chat history policy to the given user if they participate in chat history.
+	 */
+	void sendChatHistoryPolicy(ServerUser *user);
+
 	int iCodecAlpha;
 	int iCodecBeta;
 	bool bPreferAlpha;
@@ -215,12 +237,26 @@ public:
 
 	WhisperTargetCache createWhisperTargetCacheFor(ServerUser &speaker, const WhisperTarget &target);
 
+	/// Routes, stores and delivers a text message that has already passed validation and the
+	/// rate limiter.
+	void processTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg);
+
+	/// Puts a rate limited text message into the user's queue so that it can be processed once
+	/// the rate limiter allows it again.
+	void queueTextMessage(ServerUser *uSource, const MumbleProto::TextMessage &msg);
+
+	/// Processes queued text messages whose rate limit has expired.
+	void drainPendingTextMessages();
+
 private:
 	int iChannelNestingLimit;
 	int iChannelCountLimit;
 
 	AudioReceiverBuffer m_udpAudioReceivers;
 	AudioReceiverBuffer m_tcpAudioReceivers;
+
+	bool archiveChannelTree(Channel *chan, const QString &archivedBy);
+	void removeChannelRecursive(Channel *chan, Channel *dest);
 
 public slots:
 	void regSslError(const QList< QSslError > &);
@@ -262,6 +298,10 @@ public:
 	/// Timer that periodically sweeps m_pendingConnections for connections that
 	/// have not authenticated within handshakeTimeout and drops them.
 	QTimer m_handshakeTimeoutTimer;
+
+	/// Timer that processes text messages that were held back by the per-user rate limiter.
+	/// Only runs while at least one message is queued.
+	QTimer m_pendingTextTimer;
 
 	/// Connections that have been accepted but have not yet authenticated. Owned
 	/// by the main thread (never accessed from the voice thread), so access needs
@@ -391,7 +431,15 @@ public:
 	void log(ServerUser *u, const QString &) const;
 
 	void removeTemporaryChannelIfEmpty(unsigned int id);
-	void removeChannel(Channel *c, Channel *dest = nullptr);
+	/**
+	 * Removes the given channel and all of its subchannels.
+	 *
+	 * The chat history of all non-temporary channels in the tree is archived before anything is modified. If the
+	 * archive cannot be created, nothing is removed.
+	 *
+	 * @returns Whether the channel was removed
+	 */
+	bool removeChannel(Channel *c, Channel *dest = nullptr, const QString &archivedBy = QString());
 	/// Removes the user from qhHostUsers. Requires the write lock on qrwlVoiceThread to be held.
 	void removeHostUser(ServerUser *u);
 	void userEnterChannel(User *u, Channel *c, MumbleProto::UserState &mpus);

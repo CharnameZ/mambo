@@ -51,6 +51,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -264,6 +265,11 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 
 	connect(qtTimeout, SIGNAL(timeout()), this, SLOT(checkTimeout()));
 	connect(&m_handshakeTimeoutTimer, &QTimer::timeout, this, &Server::checkHandshakeTimeout);
+
+	// The bucket of the per-user rate limiter is what actually paces the queue; this interval
+	// only has to be fine-grained enough to keep a burst flowing.
+	connect(&m_pendingTextTimer, &QTimer::timeout, this, &Server::drainPendingTextMessages);
+	m_pendingTextTimer.setInterval(200);
 
 	m_bans = m_dbWrapper.getBans(iServerNum);
 	m_dbWrapper.initializeChannels(*this);
@@ -515,6 +521,61 @@ void Server::readParams() {
 	}
 	m_dbWrapper.getConfigurationTo(iServerNum, "broadcastlistenervolumeadjustments",
 								   broadcastListenerVolumeAdjustments);
+
+	chatHistoryEnabled             = Meta::mp->chatHistoryEnabled;
+	chatHistoryRequireConsent      = Meta::mp->chatHistoryRequireConsent;
+	QString chatHistoryConsentMode = Meta::mp->chatHistoryConsentMode;
+	chatHistoryMax                 = Meta::mp->chatHistoryMax;
+	chatHistoryMaxChannels         = Meta::mp->chatHistoryMaxChannels;
+	chatHistoryPolicyVersion       = Meta::mp->chatHistoryPolicyVersion;
+	qsChatHistoryNotice            = Meta::mp->qsChatHistoryNotice;
+	chatHistoryRetention           = Meta::mp->chatHistoryRetention;
+	chatHistoryConsentTimeout      = Meta::mp->chatHistoryConsentTimeout;
+
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistory", chatHistoryEnabled);
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistoryrequireconsent", chatHistoryRequireConsent);
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistoryconsent", chatHistoryConsentMode);
+	chatHistoryConsentRequired = chatHistoryConsentMode.compare(QLatin1String("off"), Qt::CaseInsensitive) != 0;
+
+	if (!chatHistoryEnabled) {
+		// Strict mode only takes effect if chat history is enabled
+		chatHistoryRequireConsent = false;
+	} else if (chatHistoryRequireConsent && !chatHistoryConsentRequired) {
+		chatHistoryConsentRequired = true;
+		log(QStringLiteral("\"chathistoryrequireconsent\" is set while \"chathistoryconsent\" is off - treating "
+						   "consent as required"));
+	}
+
+	int chatHistoryMaxValue = static_cast< int >(chatHistoryMax);
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistorymax", chatHistoryMaxValue);
+	chatHistoryMax = static_cast< unsigned int >(std::clamp(chatHistoryMaxValue, 1, 200));
+
+	int chatHistoryMaxChannelsValue = static_cast< int >(chatHistoryMaxChannels);
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistorymaxchannels", chatHistoryMaxChannelsValue);
+	chatHistoryMaxChannels = static_cast< unsigned int >(std::max(chatHistoryMaxChannelsValue, 1));
+
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistorypolicyversion", chatHistoryPolicyVersion);
+	if (chatHistoryPolicyVersion == 0) {
+		chatHistoryPolicyVersion = 1;
+	}
+
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistorynotice", qsChatHistoryNotice);
+
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistoryretention", chatHistoryRetention);
+	if (chatHistoryRetention < 0) {
+		chatHistoryRetention = 0;
+	}
+
+	m_dbWrapper.getConfigurationTo(iServerNum, "chathistoryconsenttimeout", chatHistoryConsentTimeout);
+	if (chatHistoryConsentTimeout < 1) {
+		chatHistoryConsentTimeout = 1;
+	}
+
+	if (chatHistoryEnabled) {
+		log(QStringLiteral("Chat history is enabled (consent: %1, strict mode: %2)")
+				.arg(chatHistoryConsentRequired ? QStringLiteral("required") : QStringLiteral("off"),
+					 chatHistoryRequireConsent ? QStringLiteral("on") : QStringLiteral("off")));
+	}
 }
 
 void Server::setLiveConf(const QString &key, const QString &value) {
@@ -1830,6 +1891,9 @@ void Server::message(Mumble::Protocol::TCPMessageType type, const QByteArray &qb
 			case Mumble::Protocol::TCPMessageType::CryptSetup:
 			case Mumble::Protocol::TCPMessageType::VoiceTarget:
 			case Mumble::Protocol::TCPMessageType::PluginDataTransmission:
+			case Mumble::Protocol::TCPMessageType::ClientFeatures:
+			case Mumble::Protocol::TCPMessageType::ChatHistoryConsent:
+			case Mumble::Protocol::TCPMessageType::ChatHistoryRequest:
 
 			// These are also possible, but not strictly required
 			case Mumble::Protocol::TCPMessageType::QueryUsers:
@@ -1887,8 +1951,77 @@ void Server::message(Mumble::Protocol::TCPMessageType type, const QByteArray &qb
 #undef PROCESS_MUMBLE_TCP_MESSAGE
 }
 
+void Server::drainPendingTextMessages() {
+	// Snapshot the sessions: processing a message may disconnect a user and thereby modify qhUsers
+	std::vector< unsigned int > sessions;
+	sessions.reserve(static_cast< std::size_t >(qhUsers.size()));
+
+	for (ServerUser *u : qhUsers) {
+		if (!u->pendingTextMessages.empty()) {
+			sessions.push_back(u->uiSession);
+		}
+	}
+
+	bool messagesLeft = false;
+
+	for (unsigned int session : sessions) {
+		ServerUser *u = qhUsers.value(session, nullptr);
+		if (!u) {
+			continue;
+		}
+
+		while (!u->pendingTextMessages.empty()) {
+			if (u->sState != ServerUser::Authenticated) {
+				// The messages were never delivered to anyone, so they are not stored either
+				u->pendingTextMessages.clear();
+				break;
+			}
+
+			// Only take a message out of the queue if the bucket allows processing it right away.
+			// This keeps the queue in order and never exceeds the configured rate.
+			if (u->leakyBucket.ratelimit(1)) {
+				break;
+			}
+
+			QueuedTextMessage queued = std::move(u->pendingTextMessages.front());
+			u->pendingTextMessages.pop_front();
+
+			MumbleProto::TextMessage msg;
+			msg.set_message(u8(queued.text));
+			for (unsigned int channelID : queued.channelIDs) {
+				msg.add_channel_id(channelID);
+			}
+			for (unsigned int treeID : queued.treeIDs) {
+				msg.add_tree_id(treeID);
+			}
+			for (unsigned int sessionID : queued.sessionIDs) {
+				msg.add_session(sessionID);
+			}
+
+			processTextMessage(u, msg);
+
+			// Processing the message may have disconnected the user
+			u = qhUsers.value(session, nullptr);
+			if (!u) {
+				break;
+			}
+		}
+
+		if (u && !u->pendingTextMessages.empty()) {
+			messagesLeft = true;
+		}
+	}
+
+	if (!messagesLeft) {
+		m_pendingTextTimer.stop();
+	}
+}
+
 void Server::checkTimeout() {
 	QList< ServerUser * > qlClose;
+	std::vector< ServerUser * > consentExpired;
+
+	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
 	qrwlVoiceThread.lockForRead();
 	for (ServerUser *u : qhUsers) {
@@ -1896,8 +2029,27 @@ void Server::checkTimeout() {
 			log(u, "Timeout");
 			qlClose.append(u);
 		}
+
+		if (u->chatHistoryConsent == ServerUser::ChatHistoryConsentState::AwaitingConsent
+			&& u->chatHistoryConsentDeadline != std::chrono::steady_clock::time_point()
+			&& now >= u->chatHistoryConsentDeadline) {
+			consentExpired.push_back(u);
+		}
 	}
 	qrwlVoiceThread.unlock();
+
+	for (ServerUser *u : consentExpired) {
+		u->chatHistoryConsent         = ServerUser::ChatHistoryConsentState::Declined;
+		u->chatHistoryConsentDeadline = {};
+
+		if (chatHistoryRequireConsent) {
+			log(u, "Disconnecting user as they did not answer the required chat history policy in time");
+			qlClose.append(u);
+		} else {
+			log(u, "Chat history consent timed out - chat history is disabled for this session");
+		}
+	}
+
 	for (ServerUser *u : qlClose) {
 		u->rejectConnection(true);
 	}
@@ -1993,10 +2145,61 @@ void Server::removeTemporaryChannelIfEmpty(unsigned int id) {
 		removeChannel(c);
 }
 
-void Server::removeChannel(Channel *chan, Channel *dest) {
-	if (!dest)
+bool Server::removeChannel(Channel *chan, Channel *dest, const QString &archivedBy) {
+	if (!dest) {
 		dest = chan->cParent;
+	}
 
+	// Archive before modifying the in-memory tree so that a database failure leaves the tree untouched
+	if (!archiveChannelTree(chan, archivedBy)) {
+		return false;
+	}
+
+	removeChannelRecursive(chan, dest);
+
+	return true;
+}
+
+bool Server::archiveChannelTree(Channel *chan, const QString &archivedBy) {
+	std::vector<::mumble::server::db::DBArchivedChannel > channels;
+
+	// Collect children before their parent so that deleting the channel rows doesn't violate the
+	// self-referencing foreign key of the channel table
+	std::function< void(Channel *) > collect = [&](Channel *current) {
+		for (Channel *child : QList< Channel * >(current->qlChannels)) {
+			collect(child);
+		}
+
+		if (current->bTemporary) {
+			return;
+		}
+
+		::mumble::server::db::DBArchivedChannel archive;
+		archive.serverID    = iServerNum;
+		archive.channelID   = current->iId;
+		archive.channelName = current->qsName.toStdString();
+		archive.archivedBy  = archivedBy.isEmpty() ? std::string("system") : archivedBy.toStdString();
+		channels.push_back(std::move(archive));
+	};
+	collect(chan);
+
+	if (channels.empty()) {
+		return true;
+	}
+
+	try {
+		m_dbWrapper.archiveAndDeleteChannelTree(iServerNum, channels);
+	} catch (const std::exception &e) {
+		// Don't use log() here as it would try to write to the database that just failed
+		qWarning("Failed to archive chat history of channel \"%s\" (%u) and its children: %s", qPrintable(chan->qsName),
+				 chan->iId, e.what());
+		return false;
+	}
+
+	return true;
+}
+
+void Server::removeChannelRecursive(Channel *chan, Channel *dest) {
 	{
 		QWriteLocker wl(&qrwlVoiceThread);
 		chan->unlink(nullptr);
@@ -2005,7 +2208,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 	// Note: we use a copy of qlChannels in order to avoid (indirect) concurrent modification of the list while we are
 	// iterating over it.
 	for (Channel *c : QList< Channel * >(chan->qlChannels)) {
-		removeChannel(c, dest);
+		removeChannelRecursive(c, dest);
 	}
 
 	// Note: we use a copy of qlUsers in order to avoid (indirect) concurrent modification of the list while we are
@@ -2052,9 +2255,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 	mpcr.set_channel_id(chan->iId);
 	sendAll(mpcr);
 
-	if (!chan->bTemporary) {
-		m_dbWrapper.deleteChannel(iServerNum, static_cast< unsigned int >(chan->iId));
-	}
+	// The database row was already removed together with the archive in removeChannel()
 
 	emit channelRemoved(chan);
 

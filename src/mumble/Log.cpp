@@ -33,6 +33,7 @@
 #include <QtGui/QTextBlock>
 #include <QtGui/QTextDocumentFragment>
 #include <QtNetwork/QNetworkReply>
+#include <QtWidgets/QScrollBar>
 
 const QString LogConfig::name = QLatin1String("LogConfig");
 
@@ -711,6 +712,112 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 		return QString();
 	} else {
 		return qtd.toHtml();
+	}
+}
+
+void Log::clearChatHistoryBlock() {
+	if (!m_chatHistoryValid) {
+		return;
+	}
+
+	QTextDocument *doc = Global::get().mw->qteLog->document();
+	if (m_chatHistoryStart.document() == doc && m_chatHistoryEnd.document() == doc
+		&& m_chatHistoryEnd.position() >= m_chatHistoryStart.position()) {
+		QTextCursor cursor = m_chatHistoryStart;
+		cursor.setPosition(m_chatHistoryEnd.position(), QTextCursor::KeepAnchor);
+		cursor.removeSelectedText();
+	}
+
+	m_chatHistoryValid = false;
+}
+
+void Log::clearChatHistory() {
+	clearChatHistoryBlock();
+}
+
+void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntry > &entries) {
+	LogTextBrowser *tlog = Global::get().mw->qteLog;
+	QTextDocument *doc   = tlog->document();
+
+	const bool wasAtBottom = tlog->isScrolledToBottom();
+	const int oldScroll    = tlog->getLogScroll();
+	const int oldMax       = tlog->verticalScrollBar()->maximum();
+
+	QTextCursor insertCursor(doc);
+	if (m_chatHistoryValid && m_chatHistoryStart.document() == doc && m_chatHistoryEnd.document() == doc
+		&& m_chatHistoryEnd.position() >= m_chatHistoryStart.position()) {
+		insertCursor = m_chatHistoryStart;
+		insertCursor.setPosition(m_chatHistoryEnd.position(), QTextCursor::KeepAnchor);
+		insertCursor.removeSelectedText();
+		insertCursor.clearSelection();
+	} else {
+		m_chatHistoryValid = false;
+		insertCursor.movePosition(QTextCursor::End);
+	}
+
+	// Build the block in a separate document so that it can be inserted in one piece
+	QTextDocument historyDoc;
+	QTextCursor hc(&historyDoc);
+	hc.movePosition(QTextCursor::End);
+
+	const int msgMargin = Global::get().s.iChatMessageMargins;
+	QTextFrameFormat qttf;
+	qttf.setTopMargin(0);
+	qttf.setBottomMargin(msgMargin);
+
+	QTextBlockFormat bf = hc.blockFormat();
+	bf.setLineHeight(0, QTextBlockFormat::FixedHeight);
+	bf.setTopMargin(0);
+	bf.setBottomMargin(0);
+	hc.setBlockFormat(bf);
+
+	if (!title.isEmpty()) {
+		hc.insertFrame(qttf);
+		hc.insertHtml(Log::msgColor(title, Log::Server));
+		hc.movePosition(QTextCursor::End);
+		hc.setBlockFormat(bf);
+	}
+
+	for (const ChatHistoryLogEntry &entry : entries) {
+		const QString fixedNLPlain = QTextDocumentFragment::fromHtml(entry.console)
+										 .toPlainText()
+										 .replace(QLatin1String("\r\n"), QLatin1String("\n"))
+										 .replace(QLatin1String("\r"), QLatin1String("\n"));
+
+		QTextFrameFormat entryFormat = qttf;
+		if (fixedNLPlain.contains(QRegularExpression(QLatin1String("\\n[ \\t]*$")))) {
+			entryFormat.setBorder(1);
+			entryFormat.setPadding(2);
+			entryFormat.setBorderStyle(QTextFrameFormat::BorderStyle_Dashed);
+		}
+
+		hc.insertFrame(entryFormat);
+
+		const QString dateString = QLocale().toString(entry.timestamp.date(), QLocale::ShortFormat);
+		const QString timeString = entry.timestamp.time().toString(
+			QLatin1String(Global::get().s.bLog24HourClock ? "HH:mm:ss" : "hh:mm:ss AP"));
+		hc.insertHtml(Log::msgColor(
+			QString::fromLatin1("[%1 %2] ").arg(dateString.toHtmlEscaped(), timeString.toHtmlEscaped()), Log::Time));
+
+		validHtml(entry.console, &hc);
+		hc.movePosition(QTextCursor::End);
+		hc.setBlockFormat(bf);
+	}
+
+	const int startPos = insertCursor.position();
+	insertCursor.insertFragment(QTextDocumentFragment(&historyDoc));
+	const int endPos = insertCursor.position();
+
+	m_chatHistoryStart = QTextCursor(doc);
+	m_chatHistoryStart.setPosition(startPos);
+	m_chatHistoryEnd = QTextCursor(doc);
+	m_chatHistoryEnd.setPosition(endPos);
+	m_chatHistoryValid = true;
+
+	if (wasAtBottom) {
+		tlog->setLogScroll(tlog->verticalScrollBar()->maximum());
+	} else {
+		tlog->setLogScroll(oldScroll + (tlog->verticalScrollBar()->maximum() - oldMax));
 	}
 }
 

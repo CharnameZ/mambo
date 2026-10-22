@@ -42,6 +42,8 @@ class UserInformation;
 class VoiceRecorderDialog;
 class PositionalAudioViewer;
 class PTTButtonWidget;
+class ChatHistoryController;
+class QToolButton;
 
 namespace Search {
 class SearchDialog;
@@ -87,6 +89,9 @@ public:
 	QIcon qiTalkingOn, qiTalkingWhisper, qiTalkingShout, qiTalkingOff;
 	QIcon m_iconInformation;
 	std::unordered_map< unsigned int, qt_unique_ptr< UserLocalNicknameDialog > > qmUserNicknameTracker;
+
+	ChatHistoryController *m_chatHistoryController = nullptr;
+	QToolButton *m_qbLoadEarlier                   = nullptr;
 
 	/// "Action" for when there are no actions available
 	QAction *qaEmpty;
@@ -440,6 +445,8 @@ signals:
 	void windowVisibilityToggled();
 	/// Signal emitted whenever the Mumble MainWindow regains the active state from the window manager
 	void windowActivated();
+	/// Signal emitted when the local user has been moved to another channel
+	void selfChannelChanged(Channel *channel);
 
 public:
 	MainWindow(QWidget *parent);

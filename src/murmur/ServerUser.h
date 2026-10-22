@@ -29,6 +29,9 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -109,6 +112,16 @@ public:
 
 class CryptState;
 
+/// A text message that the per-user rate limiter held back instead of dropping it. Once the
+/// bucket has refilled, the message is run through the regular text message path, so it is
+/// delivered and stored just like a message that wasn't rate limited.
+struct QueuedTextMessage {
+	QString text;
+	std::vector< unsigned int > channelIDs;
+	std::vector< unsigned int > treeIDs;
+	std::vector< unsigned int > sessionIDs;
+};
+
 class ServerUser : public Connection, public ServerUserInfo {
 private:
 	Q_OBJECT
@@ -159,6 +172,21 @@ public:
 
 	LeakyBucket leakyBucket;
 	LeakyBucket m_pluginMessageBucket;
+	LeakyBucket chatHistoryRequestBucket;
+
+	/// Text messages waiting for the rate limiter to allow processing them. Only ever accessed
+	/// from the main thread.
+	std::deque< QueuedTextMessage > pendingTextMessages;
+
+	/// Bitmask of features the client announced via ClientFeatures
+	std::uint64_t clientFeatures = 0;
+	bool featuresReceived        = false;
+
+	enum class ChatHistoryConsentState { NotParticipating, NotRequired, AwaitingConsent, Consented, Declined };
+
+	ChatHistoryConsentState chatHistoryConsent = ChatHistoryConsentState::NotParticipating;
+	std::uint32_t chatHistoryPolicyVersion     = 0;
+	std::chrono::steady_clock::time_point chatHistoryConsentDeadline;
 
 	int iLastPermissionCheck;
 	QMap< int, unsigned int > qmPermissionSent;
