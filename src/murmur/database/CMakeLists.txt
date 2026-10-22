@@ -30,6 +30,10 @@ add_library(mumble_server_database STATIC
 	"ChannelLinkTable.cpp"
 	"BanTable.cpp"
 	"ChannelListenerTable.cpp"
+	"ChatMessageTable.cpp"
+	"ChatMessageChannelTable.cpp"
+	"ArchivedChannelTable.cpp"
+	"ChatHistoryStore.cpp"
 )
 
 set_property(TARGET mumble_server_database PROPERTY INTERPROCEDURAL_OPTIMIZATION ${lto})

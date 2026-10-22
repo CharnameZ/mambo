@@ -53,6 +53,38 @@ This is intentional behavior in order to prevent data loss. It is then the users
 underlying issue in their DB by hand.
 
 
+## Chat history
+
+Schema version 12 added three tables for the optional chat history feature:
+
+| table | contents |
+|---|---|
+| `chat_messages` | One row per stored message: server, sender snapshot, message body and creation time. |
+| `chat_message_channels` | Maps a message to each channel it was sent to. `archive_id` is `NULL` for messages in a live channel. |
+| `archived_channels` | One row per removed channel with archived history: original channel ID and name, archive timestamp and who removed it. |
+
+A message body is stored once. A message sent to several channels has one
+`chat_messages` row and one `chat_message_channels` row per channel. The
+tables are managed by `ChatHistoryStore`, which reuses the `ServerDatabase`
+connection held by `DBWrapper`.
+
+When a channel subtree is deleted through `Server::removeChannel()`, its
+history is archived before the in-memory channel tree is modified. The whole
+subtree is processed in one transaction, children before their parents: for
+each channel an `archived_channels` row is inserted, the message-channel
+mappings are repointed to the archive and the channel row is deleted. If that
+transaction fails, nothing is removed, so the channel tree and the history
+cannot diverge. Temporary channels are never archived (their messages are not
+stored in the first place). Archived history can only be read and removed
+through the Ice interface.
+
+The three tables were introduced by schema version 12 and their `migrate()`
+implementations are no-ops: there is no older version of these tables to copy
+from, so an upgrade only creates them. Clearing history removes the mappings
+first and then deletes messages that no longer have any mapping, so
+`chat_messages` does not accumulate orphaned rows.
+
+
 ## Changing the database schema
 
 The database schema is a monotonically increasing number that acts as a version number for the database layout. The layout encompasses the existence

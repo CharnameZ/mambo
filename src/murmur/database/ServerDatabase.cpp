@@ -5,11 +5,14 @@
 
 #include "ServerDatabase.h"
 #include "ACLTable.h"
+#include "ArchivedChannelTable.h"
 #include "BanTable.h"
 #include "ChannelLinkTable.h"
 #include "ChannelListenerTable.h"
 #include "ChannelPropertyTable.h"
 #include "ChannelTable.h"
+#include "ChatMessageChannelTable.h"
+#include "ChatMessageTable.h"
 #include "ConfigTable.h"
 #include "GroupMemberTable.h"
 #include "GroupTable.h"
@@ -46,6 +49,9 @@ namespace server {
 				ChannelLinkTable,
 				BanTable,
 				ChannelListenerTable,
+				ChatMessageTable,
+				ArchivedChannelTable,
+				ChatMessageChannelTable,
 			};
 		}
 
@@ -113,6 +119,16 @@ namespace server {
 				addTable(std::make_unique< ChannelListenerTable >(m_sql, m_backend, getUserTable(), getChannelTable()));
 			assert(id == TableIndex::ChannelListenerTable);
 
+			id = addTable(std::make_unique< ChatMessageTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::ChatMessageTable);
+
+			id = addTable(std::make_unique< ArchivedChannelTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::ArchivedChannelTable);
+
+			id = addTable(std::make_unique< ChatMessageChannelTable >(
+				m_sql, m_backend, getServerTable(), getChatMessageTable(), getArchivedChannelTable()));
+			assert(id == TableIndex::ChatMessageChannelTable);
+
 			// Mark id as unused in case the asserts are disabled (e.g. in release builds)
 			(void) id;
 		}
@@ -145,6 +161,9 @@ namespace server {
 		GET_TABLE_IMPL(ChannelLinkTable)
 		GET_TABLE_IMPL(BanTable)
 		GET_TABLE_IMPL(ChannelListenerTable)
+		GET_TABLE_IMPL(ChatMessageTable)
+		GET_TABLE_IMPL(ArchivedChannelTable)
+		GET_TABLE_IMPL(ChatMessageChannelTable)
 
 #undef GET_TABLE_IMPL
 
