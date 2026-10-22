@@ -38,6 +38,8 @@
 #include <sstream>
 #include <unordered_set>
 
+#include <algorithm>
+
 using namespace std;
 using namespace MumbleServer;
 
@@ -105,6 +107,51 @@ static std::string iceBase64(const std::string &s) {
 static void logToLog(const ::mumble::server::db::DBLogEntry &entry, ::MumbleServer::LogEntry &le) {
 	le.timestamp = static_cast< Ice::Int >(mumble::server::db::toEpochSeconds(entry.timestamp));
 	le.txt       = iceString(entry.message);
+}
+
+static void chatMessageToChatHistoryEntry(const ::mumble::server::db::DBChatMessage &message,
+										  ::MumbleServer::ChatHistoryEntry &entry) {
+	entry.id         = static_cast< Ice::Int >(message.id);
+	entry.senderID   = message.senderID ? static_cast< Ice::Int >(*message.senderID) : 0;
+	entry.senderName = iceString(message.senderName);
+	entry.timestamp  = static_cast< Ice::Int >(mumble::server::db::toEpochSeconds(message.createdAt));
+	entry.message    = iceString(message.message);
+}
+
+static ::MumbleServer::ChatHistoryPage chatHistoryPageToIce(const ::mumble::server::db::ChatHistoryPage &page) {
+	::MumbleServer::ChatHistoryPage result;
+	result.hasMore = page.hasMore;
+
+	for (const ::mumble::server::db::DBChatMessage &message : page.messages) {
+		::MumbleServer::ChatHistoryEntry entry;
+		chatMessageToChatHistoryEntry(message, entry);
+		result.messages.push_back(entry);
+	}
+
+	return result;
+}
+
+static unsigned int effectiveChatHistoryLimit(const ::Server *server, ::Ice::Int limit) {
+	if (limit <= 0) {
+		return server->chatHistoryMax;
+	}
+
+	return std::min< unsigned int >(static_cast< unsigned int >(limit), server->chatHistoryMax);
+}
+
+static bool archiveBelongsToServer(::Server *server, int server_id, ::Ice::Int archiveID) {
+	if (archiveID <= 0) {
+		return false;
+	}
+
+	for (const ::mumble::server::db::DBArchivedChannel &archive :
+		 server->m_dbWrapper.getArchivedChannels(static_cast< unsigned int >(server_id))) {
+		if (archive.archiveID && static_cast<::Ice::Int >(*archive.archiveID) == archiveID) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 static void userToUser(const ::User *p, ::MumbleServer::User &mp) {
@@ -1566,10 +1613,125 @@ static void impl_Server_removeChannel(const ::MumbleServer::AMD_Server_removeCha
 
 	if (!channel->cParent) {
 		cb->ice_exception(::MumbleServer::InvalidChannelException());
+	} else if (!server->removeChannel(channel)) {
+		cb->ice_exception(::Ice::UnknownException(__FILE__, __LINE__));
 	} else {
-		server->removeChannel(channel);
+		server->log(QString::fromLatin1("Removed channel %1 via Ice (chat history archived)").arg(channelid));
 		cb->ice_response();
 	}
+
+	ICE_IMPL_END
+}
+
+static void impl_Server_getChatHistory(const ::MumbleServer::AMD_Server_getChatHistoryPtr cb, int server_id,
+									   ::Ice::Int channelid, ::Ice::Int beforeID, ::Ice::Int limit) {
+	ICE_IMPL_BEGIN
+
+	NEED_SERVER;
+	NEED_CHANNEL;
+
+	const unsigned int beforeIDValue = beforeID > 0 ? static_cast< unsigned int >(beforeID) : 0;
+
+	cb->ice_response(chatHistoryPageToIce(
+		server->m_dbWrapper.getChatHistory(static_cast< unsigned int >(server_id), channel->iId, beforeIDValue,
+										   effectiveChatHistoryLimit(server, limit))));
+
+	ICE_IMPL_END
+}
+
+static void impl_Server_getArchivedChatHistory(const ::MumbleServer::AMD_Server_getArchivedChatHistoryPtr cb,
+											   int server_id, ::Ice::Int archiveID, ::Ice::Int beforeID,
+											   ::Ice::Int limit) {
+	ICE_IMPL_BEGIN
+
+	NEED_SERVER;
+
+	if (!archiveBelongsToServer(server, server_id, archiveID)) {
+		cb->ice_exception(InvalidArchiveException());
+		return;
+	}
+
+	const unsigned int beforeIDValue = beforeID > 0 ? static_cast< unsigned int >(beforeID) : 0;
+
+	cb->ice_response(chatHistoryPageToIce(server->m_dbWrapper.getArchivedChatHistory(
+		static_cast< unsigned int >(archiveID), beforeIDValue, effectiveChatHistoryLimit(server, limit))));
+
+	ICE_IMPL_END
+}
+
+static void impl_Server_getArchivedChannels(const ::MumbleServer::AMD_Server_getArchivedChannelsPtr cb, int server_id) {
+	ICE_IMPL_BEGIN
+
+	NEED_SERVER;
+	::MumbleServer::ArchivedChannelList channels;
+
+	for (const ::mumble::server::db::DBArchivedChannel &archive :
+		 server->m_dbWrapper.getArchivedChannels(static_cast< unsigned int >(server_id))) {
+		::MumbleServer::ArchivedChannel entry;
+		entry.archiveID   = archive.archiveID ? static_cast< Ice::Int >(*archive.archiveID) : 0;
+		entry.channelID   = static_cast< Ice::Int >(archive.channelID);
+		entry.channelName = iceString(archive.channelName);
+		entry.archivedAt  = static_cast< Ice::Int >(mumble::server::db::toEpochSeconds(archive.archivedAt));
+		entry.archivedBy  = archive.archivedBy ? iceString(*archive.archivedBy) : std::string("system");
+		channels.push_back(entry);
+	}
+
+	cb->ice_response(channels);
+
+	ICE_IMPL_END
+}
+
+static void impl_Server_clearChatHistory(const ::MumbleServer::AMD_Server_clearChatHistoryPtr cb, int server_id,
+										 ::Ice::Int channelid) {
+	ICE_IMPL_BEGIN
+
+	VERIFY_DB_NOT_IN_READONLY;
+	NEED_SERVER;
+	NEED_CHANNEL;
+
+	server->m_dbWrapper.clearChatHistory(static_cast< unsigned int >(server_id), channel->iId);
+	server->log(QString::fromLatin1("Cleared chat history of channel \"%1\" (%2) via Ice")
+					.arg(channel->qsName)
+					.arg(channel->iId));
+	cb->ice_response();
+
+	ICE_IMPL_END
+}
+
+static void impl_Server_clearAllChatHistory(const ::MumbleServer::AMD_Server_clearAllChatHistoryPtr cb, int server_id,
+											bool confirm) {
+	ICE_IMPL_BEGIN
+
+	VERIFY_DB_NOT_IN_READONLY;
+	NEED_SERVER;
+
+	if (!confirm) {
+		cb->ice_exception(InvalidInputDataException());
+		return;
+	}
+
+	server->m_dbWrapper.clearAllChatHistory(static_cast< unsigned int >(server_id));
+	server->log(QString::fromLatin1("Cleared all chat history and archives via Ice"));
+	cb->ice_response();
+
+	ICE_IMPL_END
+}
+
+static void impl_Server_deleteArchivedChannel(const ::MumbleServer::AMD_Server_deleteArchivedChannelPtr cb,
+											  int server_id, ::Ice::Int archiveID) {
+	ICE_IMPL_BEGIN
+
+	VERIFY_DB_NOT_IN_READONLY;
+	NEED_SERVER;
+
+	if (!archiveBelongsToServer(server, server_id, archiveID)) {
+		cb->ice_exception(InvalidArchiveException());
+		return;
+	}
+
+	server->m_dbWrapper.deleteArchivedChannel(static_cast< unsigned int >(archiveID));
+	server->log(QString::fromLatin1("Deleted chat history archive %1 via Ice").arg(archiveID));
+	cb->ice_response();
 
 	ICE_IMPL_END
 }

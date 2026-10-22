@@ -92,6 +92,24 @@ public:
 	virtual void removeChannel_async(const ::MumbleServer::AMD_Server_removeChannelPtr &, ::Ice::Int,
 									 const Ice::Current &);
 
+	virtual void getChatHistory_async(const ::MumbleServer::AMD_Server_getChatHistoryPtr &, ::Ice::Int, ::Ice::Int,
+									  ::Ice::Int, const Ice::Current &);
+
+	virtual void getArchivedChatHistory_async(const ::MumbleServer::AMD_Server_getArchivedChatHistoryPtr &, ::Ice::Int,
+											  ::Ice::Int, ::Ice::Int, const Ice::Current &);
+
+	virtual void getArchivedChannels_async(const ::MumbleServer::AMD_Server_getArchivedChannelsPtr &,
+										   const Ice::Current &);
+
+	virtual void clearChatHistory_async(const ::MumbleServer::AMD_Server_clearChatHistoryPtr &, ::Ice::Int,
+										const Ice::Current &);
+
+	virtual void clearAllChatHistory_async(const ::MumbleServer::AMD_Server_clearAllChatHistoryPtr &, bool,
+										   const Ice::Current &);
+
+	virtual void deleteArchivedChannel_async(const ::MumbleServer::AMD_Server_deleteArchivedChannelPtr &, ::Ice::Int,
+											 const Ice::Current &);
+
 	virtual void addChannel_async(const ::MumbleServer::AMD_Server_addChannelPtr &, const ::std::string &, ::Ice::Int,
 								  const Ice::Current &);
 

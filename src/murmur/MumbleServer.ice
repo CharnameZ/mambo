@@ -223,6 +223,49 @@ module MumbleServer
 		string txt;
 	};
 
+	/** A stored chat message.
+	 **/
+	struct ChatHistoryEntry {
+		/** ID of the message. */
+		int id;
+		/** ID of the registered sender or 0 if the sender was not registered. */
+		int senderID;
+		/** Name of the sender at the time the message was sent. */
+		string senderName;
+		/** Time the message was sent in UNIX time. */
+		int timestamp;
+		/** The message text. */
+		string message;
+	};
+
+	sequence<ChatHistoryEntry> ChatHistoryEntryList;
+
+	/** A page of chat messages ordered from oldest to newest.
+	 **/
+	struct ChatHistoryPage {
+		/** The messages in this page. */
+		ChatHistoryEntryList messages;
+		/** Whether older messages are available. */
+		bool hasMore;
+	};
+
+	/** A deleted channel whose chat history was archived.
+	 **/
+	struct ArchivedChannel {
+		/** ID of the archive. */
+		int archiveID;
+		/** ID the channel had before it was deleted. */
+		int channelID;
+		/** Name the channel had when it was deleted. */
+		string channelName;
+		/** Time the archive was created in UNIX time. */
+		int archivedAt;
+		/** Name of the user that deleted the channel or "system". */
+		string archivedBy;
+	};
+
+	sequence<ArchivedChannel> ArchivedChannelList;
+
 	class Tree;
 	sequence<Tree> TreeList;
 
@@ -296,6 +339,7 @@ module MumbleServer
 	exception InvalidInputDataException extends ServerException {};
 	/** This is thrown when the referenced channel listener does not actually exist */
 	exception InvalidListenerException extends ServerException {};
+	exception InvalidArchiveException extends ServerException {};
 	/** This is thrown when the server has its database in read-only mode and whatever you requested is incompatible with that. */
 	exception ReadOnlyModeException extends ServerException {};
 
@@ -662,6 +706,46 @@ module MumbleServer
 		 * @param channelid ID of Channel. See {@link Channel.id}.
 		 */
 		void removeChannel(int channelid) throws ServerBootedException, InvalidChannelException, InvalidSecretException, ReadOnlyModeException;
+
+		/** Chat history administration. These methods use the regular Ice write secret; there is currently
+		 * no separate read-only secret for them.
+		 */
+
+		/** Fetch a page of the active chat history of a channel. The messages are ordered from oldest to newest.
+		 * @param channelid ID of Channel. See {@link Channel.id}.
+		 * @param beforeID Only messages with an ID smaller than this are returned. Pass 0 to get the newest messages.
+		 * @param limit Maximum number of messages to return. Values below 1 or above the server's configured maximum are clamped.
+		 * @return The requested page. {@link ChatHistoryPage.hasMore} indicates whether older messages are available.
+		 */
+		idempotent ChatHistoryPage getChatHistory(int channelid, int beforeID, int limit) throws ServerBootedException, InvalidChannelException, InvalidSecretException;
+
+		/** Fetch a page of the chat history of an archived channel. The messages are ordered from oldest to newest.
+		 * @param archiveID ID of the archive. See {@link ArchivedChannel.archiveID}.
+		 * @param beforeID Only messages with an ID smaller than this are returned. Pass 0 to get the newest messages.
+		 * @param limit Maximum number of messages to return. Values below 1 or above the server's configured maximum are clamped.
+		 * @return The requested page. {@link ChatHistoryPage.hasMore} indicates whether older messages are available.
+		 */
+		idempotent ChatHistoryPage getArchivedChatHistory(int archiveID, int beforeID, int limit) throws ServerBootedException, InvalidArchiveException, InvalidSecretException;
+
+		/** Fetch all archived channels of this server.
+		 * @return List of archives.
+		 */
+		idempotent ArchivedChannelList getArchivedChannels() throws ServerBootedException, InvalidSecretException;
+
+		/** Remove the active chat history of a channel. The channel itself is not affected.
+		 * @param channelid ID of Channel. See {@link Channel.id}.
+		 */
+		void clearChatHistory(int channelid) throws ServerBootedException, InvalidChannelException, InvalidSecretException, ReadOnlyModeException;
+
+		/** Remove all chat history and all archives of this server. This cannot be undone.
+		 * @param confirm Must be true. Passing false causes an exception to be thrown instead of clearing anything.
+		 */
+		void clearAllChatHistory(bool confirm) throws ServerBootedException, InvalidInputDataException, InvalidSecretException, ReadOnlyModeException;
+
+		/** Delete an archived channel and its chat history. This cannot be undone.
+		 * @param archiveID ID of the archive. See {@link ArchivedChannel.archiveID}.
+		 */
+		void deleteArchivedChannel(int archiveID) throws ServerBootedException, InvalidArchiveException, InvalidSecretException, ReadOnlyModeException;
 
 		/** Add a new channel.
 		 * @param name Name of new channel.
