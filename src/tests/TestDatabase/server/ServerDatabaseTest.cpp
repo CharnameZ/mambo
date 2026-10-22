@@ -13,17 +13,23 @@
 #include "database/NoDataException.h"
 
 #include "database/ACLTable.h"
+#include "database/ArchivedChannelTable.h"
 #include "database/BanTable.h"
 #include "database/ChannelLinkTable.h"
 #include "database/ChannelListenerTable.h"
 #include "database/ChannelPropertyTable.h"
 #include "database/ChannelTable.h"
+#include "database/ChatHistoryStore.h"
+#include "database/ChatMessageChannelTable.h"
+#include "database/ChatMessageTable.h"
 #include "database/ConfigTable.h"
 #include "database/DBAcl.h"
+#include "database/DBArchivedChannel.h"
 #include "database/DBBan.h"
 #include "database/DBChannel.h"
 #include "database/DBChannelLink.h"
 #include "database/DBChannelListener.h"
+#include "database/DBChatMessage.h"
 #include "database/DBGroup.h"
 #include "database/DBGroupMember.h"
 #include "database/DBLogEntry.h"
@@ -253,6 +259,8 @@ private slots:
 	void ipAddress_conversions();
 	void banTable_general();
 	void channelListenerTable_general();
+	void chatHistoryTables_general();
+	void chatHistoryStore_general();
 
 	void database_schema_migration();
 	void database_future_schema_migration();
@@ -1613,6 +1621,315 @@ void ServerDatabaseTest::channelListenerTable_general() {
 	invalid.userID    = nonExistingUserID;
 	QVERIFY_THROWS_EXCEPTION(::mdb::AccessException, table.addListener(invalid));
 
+
+	MUMBLE_END_TEST_CASE
+}
+
+void ServerDatabaseTest::chatHistoryTables_general() {
+	MUMBLE_BEGIN_TEST_CASE
+
+	const unsigned int serverID = 1;
+	db.getServerTable().addServer(serverID);
+
+	::msdb::DBChatMessage message;
+	message.serverID   = serverID;
+	message.senderID   = 42;
+	message.senderHash = std::string("hash");
+	message.senderName = "Alice";
+	message.message    = "Hello";
+	message.createdAt  = ::msdb::DBChatMessage::timestamp_type(std::chrono::seconds(1234));
+
+	unsigned int messageID = db.getChatMessageTable().addMessage(message);
+	QVERIFY(messageID > 0);
+	QVERIFY(db.getChatMessageTable().messageExists(messageID));
+
+	::msdb::DBChatMessage loadedMessage = db.getChatMessageTable().getMessage(messageID);
+	QCOMPARE(loadedMessage.id, messageID);
+	QCOMPARE(loadedMessage.serverID, serverID);
+	QVERIFY(loadedMessage.senderID.has_value());
+	QCOMPARE(loadedMessage.senderID.value(), static_cast< unsigned int >(42));
+	QVERIFY(loadedMessage.senderHash.has_value());
+	QCOMPARE(loadedMessage.senderHash.value(), std::string("hash"));
+	QCOMPARE(loadedMessage.senderName, std::string("Alice"));
+	QCOMPARE(loadedMessage.message, std::string("Hello"));
+	QVERIFY(loadedMessage.createdAt == message.createdAt);
+
+	::msdb::DBChatMessage anonymousMessage;
+	anonymousMessage.serverID   = serverID;
+	anonymousMessage.senderName = "Anonymous";
+	anonymousMessage.message    = "Hi";
+
+	unsigned int anonymousMessageID = db.getChatMessageTable().addMessage(anonymousMessage);
+	QVERIFY(anonymousMessageID > messageID);
+
+	::msdb::DBChatMessage loadedAnonymousMessage = db.getChatMessageTable().getMessage(anonymousMessageID);
+	QVERIFY(!loadedAnonymousMessage.senderID.has_value());
+	QVERIFY(!loadedAnonymousMessage.senderHash.has_value());
+
+	// A message can be mapped to a channel and later moved to an archive
+	db.getChatMessageChannelTable().addMessageToChannel(messageID, serverID, 0);
+	QVERIFY(db.getChatMessageChannelTable().mappingExists(messageID, 0));
+	QVERIFY(!db.getChatMessageChannelTable().mappingExists(anonymousMessageID, 0));
+	QVERIFY_THROWS_EXCEPTION(::mdb::AccessException,
+							 db.getChatMessageChannelTable().addMessageToChannel(messageID, serverID, 0));
+
+	::msdb::DBArchivedChannel archive;
+	archive.serverID    = serverID;
+	archive.channelID   = 0;
+	archive.channelName = "Root";
+	archive.archivedAt  = ::msdb::DBArchivedChannel::timestamp_type(std::chrono::seconds(5678));
+	archive.archivedBy  = std::string("admin");
+
+	unsigned int archiveID = db.getArchivedChannelTable().addArchive(archive);
+	QVERIFY(archiveID > 0);
+	QVERIFY(db.getArchivedChannelTable().archiveExists(archiveID));
+
+	::msdb::DBArchivedChannel loadedArchive = db.getArchivedChannelTable().getArchive(archiveID);
+	QVERIFY(loadedArchive.archiveID.has_value());
+	QCOMPARE(loadedArchive.archiveID.value(), archiveID);
+	QCOMPARE(loadedArchive.serverID, serverID);
+	QCOMPARE(loadedArchive.channelID, static_cast< unsigned int >(0));
+	QCOMPARE(loadedArchive.channelName, std::string("Root"));
+	QVERIFY(loadedArchive.archivedAt == archive.archivedAt);
+	QVERIFY(loadedArchive.archivedBy.has_value());
+	QCOMPARE(loadedArchive.archivedBy.value(), std::string("admin"));
+
+	db.getChatMessageChannelTable().archiveChannel(serverID, 0, archiveID);
+
+	std::vector< unsigned int > activeMessages =
+		db.getChatMessageChannelTable().getMessageIDsForChannel(serverID, 0, std::nullopt);
+	QVERIFY(activeMessages.empty());
+
+	std::vector< unsigned int > archivedMessages =
+		db.getChatMessageChannelTable().getMessageIDsForChannel(serverID, 0, archiveID);
+	QCOMPARE(archivedMessages.size(), static_cast< std::size_t >(1));
+	QCOMPARE(archivedMessages[0], messageID);
+
+	// Foreign keys must be enforced
+	::msdb::DBChatMessage invalidMessage;
+	invalidMessage.serverID   = 99;
+	invalidMessage.senderName = "Invalid";
+	invalidMessage.message    = "Invalid";
+	QVERIFY_THROWS_EXCEPTION(::mdb::AccessException, db.getChatMessageTable().addMessage(invalidMessage));
+
+	MUMBLE_END_TEST_CASE
+}
+
+void ServerDatabaseTest::chatHistoryStore_general() {
+	MUMBLE_BEGIN_TEST_CASE
+
+	const unsigned int serverID      = 1;
+	const unsigned int otherServerID = 2;
+
+	db.getServerTable().addServer(serverID);
+	db.getServerTable().addServer(otherServerID);
+
+	::msdb::DBChannel rootChannel;
+	rootChannel.serverID  = serverID;
+	rootChannel.channelID = Mumble::ROOT_CHANNEL_ID;
+	rootChannel.parentID  = rootChannel.channelID;
+	rootChannel.name      = "Root";
+
+	::msdb::DBChannel textChannel;
+	textChannel.serverID  = serverID;
+	textChannel.channelID = 1;
+	textChannel.parentID  = rootChannel.channelID;
+	textChannel.name      = "Text";
+
+	::msdb::DBChannel otherChannel;
+	otherChannel.serverID  = serverID;
+	otherChannel.channelID = 2;
+	otherChannel.parentID  = rootChannel.channelID;
+	otherChannel.name      = "Other";
+
+	db.getChannelTable().addChannel(rootChannel);
+	db.getChannelTable().addChannel(textChannel);
+	db.getChannelTable().addChannel(otherChannel);
+
+	::msdb::ChatHistoryStore store(db);
+
+	std::vector< unsigned int > messageIDs;
+	for (unsigned int i = 0; i < 5; ++i) {
+		::msdb::DBChatMessage message;
+		message.serverID   = serverID;
+		message.senderID   = 42;
+		message.senderHash = std::string("hash");
+		message.senderName = "Alice";
+		message.message    = "Message " + std::to_string(i);
+		message.createdAt  = ::msdb::DBChatMessage::timestamp_type(std::chrono::seconds(i));
+
+		messageIDs.push_back(store.storeMessage(message, { textChannel.channelID }));
+	}
+
+	// The same message can be stored for multiple channels at once; duplicate IDs are ignored
+	::msdb::DBChatMessage sharedMessage;
+	sharedMessage.serverID   = serverID;
+	sharedMessage.senderName = "Bob";
+	sharedMessage.message    = "Shared";
+	const unsigned int sharedID =
+		store.storeMessage(sharedMessage, { textChannel.channelID, textChannel.channelID, otherChannel.channelID });
+	QVERIFY(sharedID > messageIDs.back());
+
+	// The stored message must be retrievable including its optional sender information
+	::msdb::ChatHistoryPage page = store.getHistory(serverID, textChannel.channelID, 0, 10);
+	QCOMPARE(page.messages.size(), static_cast< std::size_t >(6));
+	QVERIFY(!page.hasMore);
+	for (std::size_t i = 0; i < page.messages.size(); ++i) {
+		QCOMPARE(page.messages[i].id, i < messageIDs.size() ? messageIDs[i] : sharedID);
+		QCOMPARE(page.messages[i].message,
+				 i < messageIDs.size() ? "Message " + std::to_string(i) : std::string("Shared"));
+	}
+	QVERIFY(page.messages.front().senderID.has_value());
+	QCOMPARE(page.messages.front().senderID.value(), static_cast< unsigned int >(42));
+	QVERIFY(page.messages.front().senderHash.has_value());
+	QCOMPARE(page.messages.front().senderHash.value(), std::string("hash"));
+	QVERIFY(!page.messages.back().senderID.has_value());
+	QVERIFY(!page.messages.back().senderHash.has_value());
+	QVERIFY(std::is_sorted(
+		page.messages.begin(), page.messages.end(),
+		[](const ::msdb::DBChatMessage &lhs, const ::msdb::DBChatMessage &rhs) { return lhs.id < rhs.id; }));
+
+	// Pagination walks backwards in time and reports whether older messages exist
+	page = store.getHistory(serverID, textChannel.channelID, 0, 2);
+	QVERIFY(page.hasMore);
+	QCOMPARE(page.messages.size(), static_cast< std::size_t >(2));
+	QCOMPARE(page.messages[0].id, messageIDs[4]);
+	QCOMPARE(page.messages[1].id, sharedID);
+
+	page = store.getHistory(serverID, textChannel.channelID, messageIDs[4], 2);
+	QVERIFY(page.hasMore);
+	QCOMPARE(page.messages.size(), static_cast< std::size_t >(2));
+	QCOMPARE(page.messages[0].id, messageIDs[2]);
+	QCOMPARE(page.messages[1].id, messageIDs[3]);
+
+	page = store.getHistory(serverID, textChannel.channelID, messageIDs[2], 2);
+	QVERIFY(!page.hasMore);
+	QCOMPARE(page.messages.size(), static_cast< std::size_t >(2));
+	QCOMPARE(page.messages[0].id, messageIDs[0]);
+	QCOMPARE(page.messages[1].id, messageIDs[1]);
+
+	// Messages of other servers are not mixed in
+	QVERIFY(store.getHistory(otherServerID, textChannel.channelID, 0, 10).messages.empty());
+
+	// Archiving a channel must move its history and delete the channel atomically
+	const unsigned int archiveID =
+		store.archiveAndDeleteChannel(serverID, textChannel.channelID, textChannel.name, "Admin");
+	QVERIFY(archiveID > 0);
+	QVERIFY(!db.getChannelTable().channelExists(serverID, textChannel.channelID));
+	QVERIFY(store.getHistory(serverID, textChannel.channelID, 0, 10).messages.empty());
+
+	std::vector<::msdb::DBArchivedChannel > archives = store.getArchivedChannels(serverID);
+	QCOMPARE(archives.size(), static_cast< std::size_t >(1));
+	QVERIFY(archives[0].archiveID.has_value());
+	QCOMPARE(archives[0].archiveID.value(), archiveID);
+	QCOMPARE(archives[0].channelName, textChannel.name);
+	QVERIFY(archives[0].archivedBy.has_value());
+	QCOMPARE(archives[0].archivedBy.value(), std::string("Admin"));
+
+	page = store.getArchivedHistory(archiveID, 0, 10);
+	QCOMPARE(page.messages.size(), static_cast< std::size_t >(6));
+	QCOMPARE(page.messages.front().id, messageIDs.front());
+	QCOMPARE(page.messages.back().id, sharedID);
+
+	// Clearing a channel's active history only deletes messages that aren't referenced anywhere else
+	::msdb::DBChatMessage otherOnlyMessage;
+	otherOnlyMessage.serverID      = serverID;
+	otherOnlyMessage.senderName    = "Carol";
+	otherOnlyMessage.message       = "Other only";
+	const unsigned int otherOnlyID = store.storeMessage(otherOnlyMessage, { otherChannel.channelID });
+
+	QCOMPARE(store.getHistory(serverID, otherChannel.channelID, 0, 10).messages.size(), static_cast< std::size_t >(2));
+
+	store.clearChannelHistory(serverID, otherChannel.channelID);
+
+	QVERIFY(store.getHistory(serverID, otherChannel.channelID, 0, 10).messages.empty());
+	QVERIFY(!db.getChatMessageTable().messageExists(otherOnlyID));
+	// The shared message is still referenced by the archive and must survive
+	QVERIFY(db.getChatMessageTable().messageExists(sharedID));
+	QVERIFY(!db.getChatMessageChannelTable().mappingExists(sharedID, otherChannel.channelID));
+
+	// Deleting the archive removes its mappings and all messages that are no longer referenced
+	store.deleteArchive(archiveID);
+	QVERIFY(!db.getArchivedChannelTable().archiveExists(archiveID));
+	QVERIFY(store.getArchivedChannels(serverID).empty());
+	QVERIFY(!db.getChatMessageTable().messageExists(sharedID));
+	for (unsigned int messageID : messageIDs) {
+		QVERIFY(!db.getChatMessageTable().messageExists(messageID));
+	}
+	QVERIFY_THROWS_EXCEPTION(::mdb::NoDataException, store.deleteArchive(archiveID));
+
+	// Clearing the history of a server must not affect other servers
+	::msdb::DBChatMessage rootMessage;
+	rootMessage.serverID             = serverID;
+	rootMessage.senderName           = "Root";
+	rootMessage.message              = "Root message";
+	const unsigned int rootMessageID = store.storeMessage(rootMessage, { rootChannel.channelID });
+
+	::msdb::DBChatMessage foreignMessage;
+	foreignMessage.serverID             = otherServerID;
+	foreignMessage.senderName           = "Foreign";
+	foreignMessage.message              = "Foreign message";
+	const unsigned int foreignMessageID = store.storeMessage(foreignMessage, { rootChannel.channelID });
+
+	// An archive without messages is still created and is removed together with the server's history
+	const unsigned int emptyArchiveID =
+		store.archiveAndDeleteChannel(serverID, otherChannel.channelID, otherChannel.name, "Admin");
+	QCOMPARE(store.getArchivedChannels(serverID).size(), static_cast< std::size_t >(1));
+
+	store.clearServerHistory(serverID);
+
+	QVERIFY(!db.getChatMessageTable().messageExists(rootMessageID));
+	QVERIFY(store.getHistory(serverID, rootChannel.channelID, 0, 10).messages.empty());
+	QVERIFY(store.getArchivedChannels(serverID).empty());
+	QVERIFY(!db.getArchivedChannelTable().archiveExists(emptyArchiveID));
+
+	QVERIFY(db.getChatMessageTable().messageExists(foreignMessageID));
+	QCOMPARE(store.getHistory(otherServerID, rootChannel.channelID, 0, 10).messages.size(),
+			 static_cast< std::size_t >(1));
+
+	// Archiving a subtree must delete children before their parent (self-referencing foreign key) and
+	// must create all archives in the same transaction
+	::msdb::DBChannel parentChannel;
+	parentChannel.serverID  = serverID;
+	parentChannel.channelID = 3;
+	parentChannel.parentID  = rootChannel.channelID;
+	parentChannel.name      = "Parent";
+
+	::msdb::DBChannel childChannel;
+	childChannel.serverID  = serverID;
+	childChannel.channelID = 4;
+	childChannel.parentID  = parentChannel.channelID;
+	childChannel.name      = "Child";
+
+	db.getChannelTable().addChannel(parentChannel);
+	db.getChannelTable().addChannel(childChannel);
+
+	::msdb::DBChatMessage childMessage;
+	childMessage.serverID             = serverID;
+	childMessage.senderName           = "Dave";
+	childMessage.message              = "Child message";
+	const unsigned int childMessageID = store.storeMessage(childMessage, { childChannel.channelID });
+
+	::msdb::DBArchivedChannel childArchive;
+	childArchive.serverID    = serverID;
+	childArchive.channelID   = childChannel.channelID;
+	childArchive.channelName = childChannel.name;
+	childArchive.archivedBy  = std::string("Admin");
+
+	::msdb::DBArchivedChannel parentArchive;
+	parentArchive.serverID    = serverID;
+	parentArchive.channelID   = parentChannel.channelID;
+	parentArchive.channelName = parentChannel.name;
+	parentArchive.archivedBy  = std::string("Admin");
+
+	const std::vector< unsigned int > subtreeArchiveIDs =
+		store.archiveAndDeleteChannelTree(serverID, { childArchive, parentArchive });
+	QCOMPARE(subtreeArchiveIDs.size(), static_cast< std::size_t >(2));
+	QVERIFY(!db.getChannelTable().channelExists(serverID, childChannel.channelID));
+	QVERIFY(!db.getChannelTable().channelExists(serverID, parentChannel.channelID));
+	QCOMPARE(store.getArchivedChannels(serverID).size(), static_cast< std::size_t >(2));
+	QCOMPARE(store.getArchivedHistory(subtreeArchiveIDs[0], 0, 10).messages.size(), static_cast< std::size_t >(1));
+	QCOMPARE(store.getArchivedHistory(subtreeArchiveIDs[0], 0, 10).messages.front().id, childMessageID);
 
 	MUMBLE_END_TEST_CASE
 }

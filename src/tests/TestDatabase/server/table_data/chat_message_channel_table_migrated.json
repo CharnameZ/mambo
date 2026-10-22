@@ -1,0 +1,12 @@
+{
+	"v6": {
+		"table_name": "chat_message_channels",
+		"column_names": [
+			"message_id",
+			"server_id",
+			"channel_id",
+			"archive_id"
+		],
+		"rows": []
+	}
+}

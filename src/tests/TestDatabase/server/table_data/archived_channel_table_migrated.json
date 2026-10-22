@@ -1,0 +1,14 @@
+{
+	"v6": {
+		"table_name": "archived_channels",
+		"column_names": [
+			"archive_id",
+			"server_id",
+			"channel_id",
+			"channel_name",
+			"archived_at",
+			"archived_by"
+		],
+		"rows": []
+	}
+}

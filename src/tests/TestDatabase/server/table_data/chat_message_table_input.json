@@ -1,0 +1,16 @@
+{
+	"v6": {},
+	"v12": {
+		"table_name": "chat_messages",
+		"column_names": [
+			"id",
+			"server_id",
+			"sender_id",
+			"sender_hash",
+			"sender_name",
+			"message",
+			"created_at"
+		],
+		"rows": []
+	}
+}
