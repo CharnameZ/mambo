@@ -42,6 +42,15 @@ If not mentioned otherwise all fields outside the protobuf encoding are *big-end
 | `24` | ServerConfig           |
 | `25` | SuggestConfig          |
 | `26` | PluginDataTransmission |
+| `27` | ClientFeatures         |
+| `28` | ServerFeatures         |
+| `29` | ChatHistoryPolicy      |
+| `30` | ChatHistoryConsent     |
+| `31` | ChatHistoryRequest     |
+| `32` | ChatHistoryResponse    |
+
+Types 27 to 32 belong to the optional chat history feature; see
+[Chat history](chat_history.md) for the negotiation and message flow.
 
 For raw representation of each packet type see the [`Mumble.proto`](https://github.com/mumble-voip/mumble/blob/master/src/Mumble.proto)
 and [`MumbleUDP.proto`](https://github.com/mumble-voip/mumble/blob/master/src/MumbleUDP.proto) files.

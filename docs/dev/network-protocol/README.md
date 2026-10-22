@@ -16,3 +16,4 @@ This documentation is split into
 * [Protocol Stack (TCP)](protocol_stack_tcp.md)
 * [Establishing a Connection](establishing_connection.md)
 * [Voice Data](voice_data.md)
+* [Chat History](chat_history.md)
