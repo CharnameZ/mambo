@@ -46,9 +46,17 @@ doxygen/
 .DS_Store
 .directory
 build/
+/build-*/
 compile_commands.json
 .devcontainer/*
 __pycache__/
 CMakeSettings.json
 CLAUDE.md
 .idea
+
+# Local-only runtime artifacts: server logs, test databases and scratch
+# configs kept in the repository root (tracked .ini files live in subdirectories)
+*.log
+*.sqlite
+*.sqlite3
+/*.ini
