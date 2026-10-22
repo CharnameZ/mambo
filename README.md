@@ -2,6 +2,17 @@
 
 # Mumble - Open Source voice-chat software
 
+> [!WARNING]
+> **This is an unofficial fork of [Mumble](https://github.com/mumble-voip/mumble).** It is not
+> affiliated with, endorsed by, or supported by the Mumble project.
+>
+> The changes made in this fork are developed with substantial AI assistance and have **not** been
+> rigorously tested. Expect incomplete features, rough edges and possible data loss. Do not rely on
+> it where stability or data integrity matters without verifying it yourself.
+>
+> Problems caused by changes that are specific to this fork do not belong in the upstream issue
+> tracker; please report them in this repository instead.
+
 [![https://www.mumble.info](https://img.shields.io/badge/Website-https%3A%2F%2Fwww.mumble.info-blue?style=for-the-badge)](https://www.mumble.info)
 
 [![#mumble:matrix.org](https://img.shields.io/matrix/mumble:matrix.org?label=%23mumble:matrix.org&style=for-the-badge)](https://matrix.to/#/#mumble:matrix.org)
