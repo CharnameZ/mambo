@@ -19,6 +19,7 @@
 #include <QtCore/QTimer>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QToolButton>
 
 namespace {
@@ -57,6 +58,15 @@ ChatHistoryController::ChatHistoryController(MainWindow *parent) : QObject(paren
 
 	if (m_mw->m_qbLoadEarlier && m_mw->m_qbLoadEarlier->parentWidget()) {
 		m_mw->m_qbLoadEarlier->parentWidget()->installEventFilter(this);
+	}
+
+	if (m_mw->qteLog) {
+		// The button is a child of the log's viewport, so scrolling the log also moves the button along with the
+		// text. Put it back into place whenever the log is scrolled.
+		connect(m_mw->qteLog->verticalScrollBar(), &QScrollBar::valueChanged, this,
+				&ChatHistoryController::repositionLoadEarlierButton);
+		connect(m_mw->qteLog->horizontalScrollBar(), &QScrollBar::valueChanged, this,
+				&ChatHistoryController::repositionLoadEarlierButton);
 	}
 }
 
