@@ -828,20 +828,31 @@ QString Log::validHtml(const QString &html, QTextCursor *tc, int maxImageWidth) 
 	}
 }
 
+int Log::chatHistoryEndPosition() const {
+	const int start = m_chatHistoryStart.position();
+
+	QTextDocument *doc = m_chatHistoryStart.document();
+	// The block is never edited once it has been inserted, so its length stays valid even though new messages are
+	// appended to the log right at the block's end. Clamp to the document in case blocks were dropped from its
+	// beginning because the configured maximum number of log blocks was exceeded.
+	const int maxEnd = doc ? doc->characterCount() - 1 : start;
+	return std::clamp(start + m_chatHistoryLength, start, std::max(start, maxEnd));
+}
+
 void Log::clearChatHistoryBlock() {
 	if (!m_chatHistoryValid) {
 		return;
 	}
 
 	QTextDocument *doc = Global::get().mw->qteLog->document();
-	if (m_chatHistoryStart.document() == doc && m_chatHistoryEnd.document() == doc
-		&& m_chatHistoryEnd.position() >= m_chatHistoryStart.position()) {
+	if (m_chatHistoryStart.document() == doc) {
 		QTextCursor cursor = m_chatHistoryStart;
-		cursor.setPosition(m_chatHistoryEnd.position(), QTextCursor::KeepAnchor);
+		cursor.setPosition(chatHistoryEndPosition(), QTextCursor::KeepAnchor);
 		cursor.removeSelectedText();
 	}
 
 	m_chatHistoryValid = false;
+	m_chatHistoryLength = 0;
 }
 
 void Log::clearChatHistory() {
@@ -852,15 +863,17 @@ void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntr
 	LogTextBrowser *tlog = Global::get().mw->qteLog;
 	QTextDocument *doc   = tlog->document();
 
-	const bool wasAtBottom = tlog->isScrolledToBottom();
-	const int oldScroll    = tlog->getLogScroll();
-	const int oldMax       = tlog->verticalScrollBar()->maximum();
+	const bool hadBlock = m_chatHistoryValid && m_chatHistoryStart.document() == doc;
+
+	const int oldBlockStart = m_chatHistoryStart.position();
+	const bool wasAtBottom  = tlog->isScrolledToBottom();
+	const int oldScroll     = tlog->getLogScroll();
+	const int oldMax        = tlog->verticalScrollBar()->maximum();
 
 	QTextCursor insertCursor(doc);
-	if (m_chatHistoryValid && m_chatHistoryStart.document() == doc && m_chatHistoryEnd.document() == doc
-		&& m_chatHistoryEnd.position() >= m_chatHistoryStart.position()) {
-		insertCursor = m_chatHistoryStart;
-		insertCursor.setPosition(m_chatHistoryEnd.position(), QTextCursor::KeepAnchor);
+	if (hadBlock) {
+		insertCursor.setPosition(oldBlockStart);
+		insertCursor.setPosition(chatHistoryEndPosition(), QTextCursor::KeepAnchor);
 		insertCursor.removeSelectedText();
 		insertCursor.clearSelection();
 	} else {
@@ -919,13 +932,11 @@ void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntr
 
 	const int startPos = insertCursor.position();
 	insertCursor.insertFragment(QTextDocumentFragment(&historyDoc));
-	const int endPos = insertCursor.position();
 
 	m_chatHistoryStart = QTextCursor(doc);
 	m_chatHistoryStart.setPosition(startPos);
-	m_chatHistoryEnd = QTextCursor(doc);
-	m_chatHistoryEnd.setPosition(endPos);
-	m_chatHistoryValid = true;
+	m_chatHistoryLength = insertCursor.position() - startPos;
+	m_chatHistoryValid  = true;
 
 	if (wasAtBottom) {
 		tlog->setLogScroll(tlog->verticalScrollBar()->maximum());

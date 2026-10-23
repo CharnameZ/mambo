@@ -146,10 +146,14 @@ protected:
 
 	/// Whether a chat-history block is currently displayed in the log
 	bool m_chatHistoryValid = false;
+	/// Start of the chat-history block in the log
 	QTextCursor m_chatHistoryStart;
-	QTextCursor m_chatHistoryEnd;
+	/// Length of the chat-history block in characters
+	int m_chatHistoryLength = 0;
 
 	void clearChatHistoryBlock();
+	/// The end position of the chat-history block in the log
+	int chatHistoryEndPosition() const;
 
 public:
 	Log(QObject *p = nullptr);
