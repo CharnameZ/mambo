@@ -29,6 +29,14 @@
 
 namespace mdb = ::mumble::db;
 
+namespace {
+	std::string beforeIDParameter(::mdb::Backend backend) {
+		// PostgreSQL infers the type of a parameter that is compared against an INTEGER column as
+		// INTEGER, which can't hold the sentinel used to express "no upper bound".
+		return backend == ::mdb::Backend::PostgreSQL ? "CAST(:beforeID AS BIGINT)" : ":beforeID";
+	}
+} // namespace
+
 namespace mumble {
 namespace server {
 	namespace db {
@@ -222,8 +230,9 @@ namespace server {
 					+ column::message_id + "\" WHERE c.\"" + column::server_id + "\" = :serverID AND c.\""
 					+ column::channel_id + "\" = :channelID AND c.\"" + column::archive_id + "\" ";
 				query += archiveID ? "= :archiveID" : "IS NULL";
-				query += std::string(" AND c.\"") + column::message_id + "\" < :beforeID ORDER BY c.\""
-						 + column::message_id + "\" DESC " + ::mdb::utils::limitOffset(m_backend, ":limit");
+				query += std::string(" AND c.\"") + column::message_id + "\" < " + beforeIDParameter(m_backend)
+						 + " ORDER BY c.\"" + column::message_id + "\" DESC "
+						 + ::mdb::utils::limitOffset(m_backend, ":limit");
 
 				::mdb::TransactionHolder transaction = ensureTransaction();
 
@@ -293,8 +302,8 @@ namespace server {
 					+ "\", m.\"" + ChatMessageTable::column::created_at + "\" FROM \"" + NAME + "\" c JOIN \""
 					+ ChatMessageTable::NAME + "\" m ON m.\"" + ChatMessageTable::column::id + "\" = c.\""
 					+ column::message_id + "\" WHERE c.\"" + column::archive_id + "\" = :archiveID AND c.\""
-					+ column::message_id + "\" < :beforeID ORDER BY c.\"" + column::message_id + "\" DESC "
-					+ ::mdb::utils::limitOffset(m_backend, ":limit");
+					+ column::message_id + "\" < " + beforeIDParameter(m_backend) + " ORDER BY c.\""
+					+ column::message_id + "\" DESC " + ::mdb::utils::limitOffset(m_backend, ":limit");
 
 				::mdb::TransactionHolder transaction = ensureTransaction();
 
