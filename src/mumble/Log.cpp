@@ -28,7 +28,9 @@
 
 #include <QSignalBlocker>
 #include <QtCore/QMutexLocker>
+#include <QtCore/QPoint>
 #include <QtCore/QRegularExpression>
+#include <QtGui/QAbstractTextDocumentLayout>
 #include <QtGui/QImageWriter>
 #include <QtGui/QScreen>
 #include <QtGui/QTextBlock>
@@ -865,10 +867,14 @@ void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntr
 
 	const bool hadBlock = m_chatHistoryValid && m_chatHistoryStart.document() == doc;
 
-	const int oldBlockStart = m_chatHistoryStart.position();
-	const bool wasAtBottom  = tlog->isScrolledToBottom();
-	const int oldScroll     = tlog->getLogScroll();
-	const int oldMax        = tlog->verticalScrollBar()->maximum();
+	// The block is replaced in place and grows downwards, pushing everything below it down. Remember which part of the
+	// log is displayed at the top of the view so that it can be kept in place afterwards.
+	const QTextCursor viewAnchor = tlog->cursorForPosition(QPoint(0, 0));
+	const int anchorPosition     = viewAnchor.position();
+	const int anchorOffset =
+		static_cast< int >(doc->documentLayout()->blockBoundingRect(viewAnchor.block()).top()) - tlog->getLogScroll();
+	const int oldBlockStart  = m_chatHistoryStart.position();
+	const int oldBlockLength = m_chatHistoryLength;
 
 	QTextCursor insertCursor(doc);
 	if (hadBlock) {
@@ -938,11 +944,21 @@ void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntr
 	m_chatHistoryLength = insertCursor.position() - startPos;
 	m_chatHistoryValid  = true;
 
-	if (wasAtBottom) {
+	if (!hadBlock) {
 		tlog->setLogScroll(tlog->verticalScrollBar()->maximum());
-	} else {
-		tlog->setLogScroll(oldScroll + (tlog->verticalScrollBar()->maximum() - oldMax));
+		return;
 	}
+
+	// Everything from the block's start on has been shifted by the length difference, so the anchor has to follow
+	int newAnchorPosition = anchorPosition;
+	if (anchorPosition >= oldBlockStart) {
+		newAnchorPosition += m_chatHistoryLength - oldBlockLength;
+	}
+	newAnchorPosition = std::clamp(newAnchorPosition, 0, doc->characterCount() - 1);
+
+	const QTextBlock anchorBlock = doc->findBlock(newAnchorPosition);
+	const int anchorTop = static_cast< int >(doc->documentLayout()->blockBoundingRect(anchorBlock).top());
+	tlog->setLogScroll(anchorTop - anchorOffset);
 }
 
 void Log::log(MsgType mt, const QString &console, const QString &terse, bool ownMessage, const QString &overrideTTS,
