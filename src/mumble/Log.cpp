@@ -853,7 +853,7 @@ void Log::clearChatHistoryBlock() {
 		cursor.removeSelectedText();
 	}
 
-	m_chatHistoryValid = false;
+	m_chatHistoryValid  = false;
 	m_chatHistoryLength = 0;
 }
 
@@ -957,7 +957,7 @@ void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntr
 	newAnchorPosition = std::clamp(newAnchorPosition, 0, doc->characterCount() - 1);
 
 	const QTextBlock anchorBlock = doc->findBlock(newAnchorPosition);
-	const int anchorTop = static_cast< int >(doc->documentLayout()->blockBoundingRect(anchorBlock).top());
+	const int anchorTop          = static_cast< int >(doc->documentLayout()->blockBoundingRect(anchorBlock).top());
 	tlog->setLogScroll(anchorTop - anchorOffset);
 }
 
