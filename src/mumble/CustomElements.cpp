@@ -12,6 +12,8 @@
 #include "Utils.h"
 #include "Global.h"
 
+#include <algorithm>
+
 #include <QMimeData>
 #include <QtCore/QTimer>
 #include <QtGui/QAbstractTextDocumentLayout>
@@ -34,6 +36,56 @@ void LogTextBrowser::setLogScroll(int scroll_pos) {
 bool LogTextBrowser::isScrolledToBottom() {
 	const QScrollBar *scrollBar = verticalScrollBar();
 	return scrollBar->value() == scrollBar->maximum();
+}
+
+int LogTextBrowser::imageFitWidth() const {
+	int available = contentsRect().width();
+
+	// Reserve room for the vertical scrollbar so that scaling the images doesn't toggle its visibility, which would in
+	// turn change the available width and trigger another round of scaling.
+	if (verticalScrollBarPolicy() == Qt::ScrollBarAsNeeded) {
+		available -= verticalScrollBar()->sizeHint().width();
+	}
+
+	available -= 2 * static_cast< int >(document()->documentMargin());
+
+	// Leave a little room so that rounding doesn't cause a horizontal scrollbar to appear
+	return std::max(0, available - 2);
+}
+
+void LogTextBrowser::resizeEvent(QResizeEvent *e) {
+	QTextBrowser::resizeEvent(e);
+
+	if (!m_imageFitTimer) {
+		m_imageFitTimer = new QTimer(this);
+		m_imageFitTimer->setSingleShot(true);
+		connect(m_imageFitTimer, &QTimer::timeout, this, &LogTextBrowser::fitImages);
+	}
+
+	// The log is re-laid out on every step while the window is being resized, so wait for the size to settle before
+	// scaling the images.
+	m_imageFitTimer->start(100);
+}
+
+void LogTextBrowser::fitImages() {
+	const int width = imageFitWidth();
+	if (width <= 0 || width == m_imageFitWidth) {
+		return;
+	}
+	m_imageFitWidth = width;
+
+	const bool atBottom = isScrolledToBottom();
+	const int oldScroll = getLogScroll();
+
+	Log::fitImagesToWidth(document(), width);
+
+	if (atBottom) {
+		// The document may have become shorter, in which case the scrollbar range is only updated once the new layout
+		// has been computed.
+		QTimer::singleShot(0, this, [this]() { setLogScroll(verticalScrollBar()->maximum()); });
+	} else {
+		setLogScroll(oldScroll);
+	}
 }
 
 

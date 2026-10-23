@@ -11,10 +11,21 @@
 #include <QtWidgets/QTextBrowser>
 #include <QtWidgets/QTextEdit>
 
+class QTimer;
+
 class LogTextBrowser : public QTextBrowser {
 private:
 	Q_OBJECT
 	Q_DISABLE_COPY(LogTextBrowser)
+
+	QTimer *m_imageFitTimer = nullptr;
+	/// The width the images in the log were last fitted to
+	int m_imageFitWidth = -1;
+
+	void fitImages();
+
+protected:
+	void resizeEvent(QResizeEvent *e) Q_DECL_OVERRIDE;
 
 public:
 	LogTextBrowser(QWidget *p = nullptr);
@@ -22,6 +33,8 @@ public:
 	int getLogScroll();
 	void setLogScroll(int scroll_pos);
 	bool isScrolledToBottom();
+	/// The width available for inline images in the log
+	int imageFitWidth() const;
 };
 
 class ChatbarTextEdit : public QTextEdit {

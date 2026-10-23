@@ -22,6 +22,7 @@
 #include "VolumeAdjustment.h"
 #include "Global.h"
 
+#include <algorithm>
 #include <limits>
 #include <type_traits>
 
@@ -32,6 +33,7 @@
 #include <QtGui/QScreen>
 #include <QtGui/QTextBlock>
 #include <QtGui/QTextDocumentFragment>
+#include <QtGui/QTextImageFormat>
 #include <QtNetwork/QNetworkReply>
 #include <QtWidgets/QScrollBar>
 
@@ -640,7 +642,106 @@ QString Log::imageToImg(QImage img, int maxSize) {
 	return QString();
 }
 
-QString Log::validHtml(const QString &html, QTextCursor *tc) {
+/// Format property storing the dimensions an image had before it was scaled down to fit into the log. Keeping the
+/// original dimensions around allows scaling the image back up when the log gets wider, without accumulating
+/// rounding errors over repeated scaling operations.
+static constexpr int ORIGINAL_IMAGE_SIZE_PROPERTY = static_cast< int >(QTextFormat::UserProperty) + 1;
+
+/// Scales the given image format down to the given maximum width, preserving its aspect ratio.
+///
+/// @returns Whether the format was changed
+static bool fitImageFormat(QTextImageFormat &imgFmt, int maxWidth, const QTextDocument *doc) {
+	if (maxWidth <= 0) {
+		return false;
+	}
+
+	QSize originalSize;
+	if (imgFmt.hasProperty(ORIGINAL_IMAGE_SIZE_PROPERTY)) {
+		originalSize = imgFmt.property(ORIGINAL_IMAGE_SIZE_PROPERTY).toSize();
+	} else {
+		// Fall back to the dimensions the image is displayed with and, if only one of them is set, use the image's
+		// intrinsic aspect ratio to determine the other one.
+		const qreal explicitWidth  = imgFmt.width();
+		const qreal explicitHeight = imgFmt.height();
+
+		QSize imageSize;
+		if (doc) {
+			const QImage image = doc->resource(QTextDocument::ImageResource, imgFmt.name()).value< QImage >();
+			imageSize          = image.size();
+		}
+
+		if (explicitWidth > 0 && explicitHeight > 0) {
+			originalSize = QSize(qRound(explicitWidth), qRound(explicitHeight));
+		} else if (explicitWidth > 0 && imageSize.width() > 0 && imageSize.height() > 0) {
+			originalSize = QSize(qRound(explicitWidth), qRound(imageSize.height() * explicitWidth / imageSize.width()));
+		} else if (explicitHeight > 0 && imageSize.width() > 0 && imageSize.height() > 0) {
+			originalSize =
+				QSize(qRound(imageSize.width() * explicitHeight / imageSize.height()), qRound(explicitHeight));
+		} else {
+			originalSize = imageSize;
+		}
+	}
+
+	if (originalSize.width() <= 0 || originalSize.height() <= 0) {
+		// Without knowing the original dimensions, scaling the image would distort it
+		return false;
+	}
+
+	const int width  = std::min(originalSize.width(), maxWidth);
+	const int height = std::max(1, qRound(originalSize.height() * static_cast< double >(width) / originalSize.width()));
+
+	const bool changed = !imgFmt.hasProperty(ORIGINAL_IMAGE_SIZE_PROPERTY) || qRound(imgFmt.width()) != width
+						 || qRound(imgFmt.height()) != height;
+
+	imgFmt.setWidth(width);
+	imgFmt.setHeight(height);
+	imgFmt.setProperty(ORIGINAL_IMAGE_SIZE_PROPERTY, originalSize);
+
+	return changed;
+}
+
+void Log::fitImagesToWidth(QTextDocument *doc, int maxWidth) {
+	if (!doc || maxWidth <= 0) {
+		return;
+	}
+
+	struct ImageUpdate {
+		int position;
+		int length;
+		QTextImageFormat format;
+	};
+	QVector< ImageUpdate > updates;
+
+	// Collect the images first, as modifying the document invalidates the block iterators
+	for (QTextBlock qtb = doc->begin(); qtb.isValid(); qtb = qtb.next()) {
+		for (QTextBlock::iterator qtbi = qtb.begin(); !qtbi.atEnd(); ++qtbi) {
+			const QTextFragment qtf = qtbi.fragment();
+			if (!qtf.isValid() || !qtf.charFormat().isImageFormat()) {
+				continue;
+			}
+
+			QTextImageFormat imgFmt = qtf.charFormat().toImageFormat();
+			if (fitImageFormat(imgFmt, maxWidth, doc)) {
+				updates.append({ qtf.position(), qtf.length(), imgFmt });
+			}
+		}
+	}
+
+	if (updates.isEmpty()) {
+		return;
+	}
+
+	QTextCursor qtc(doc);
+	qtc.beginEditBlock();
+	for (const ImageUpdate &update : updates) {
+		qtc.setPosition(update.position, QTextCursor::MoveAnchor);
+		qtc.setPosition(update.position + update.length, QTextCursor::KeepAnchor);
+		qtc.setCharFormat(update.format);
+	}
+	qtc.endEditBlock();
+}
+
+QString Log::validHtml(const QString &html, QTextCursor *tc, int maxImageWidth) {
 	LogDocument qtd;
 
 	QRectF qr = Mumble::Screen::screenFromWidget(*Global::get().mw)->availableGeometry();
@@ -659,18 +760,30 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 	QStringList qslAllowed = allowedSchemes();
 	for (QTextBlock qtb = qtd.begin(); qtb != qtd.end(); qtb = qtb.next()) {
 		for (QTextBlock::iterator qtbi = qtb.begin(); qtbi != qtb.end(); ++qtbi) {
-			const QTextFragment &qtf = qtbi.fragment();
-			QTextCharFormat qcf      = qtf.charFormat();
+			const QTextFragment &qtf             = qtbi.fragment();
+			const QTextCharFormat originalFormat = qtf.charFormat();
+			QTextCharFormat qcf                  = originalFormat;
+
 			if (!qcf.anchorHref().isEmpty()) {
 				QUrl url(qcf.anchorHref());
 				if (!url.isValid() || !qslAllowed.contains(url.scheme())) {
-					QTextCharFormat qcfn = QTextCharFormat();
-					QTextCursor qtc(&qtd);
-					qtc.setPosition(qtf.position(), QTextCursor::MoveAnchor);
-					qtc.setPosition(qtf.position() + qtf.length(), QTextCursor::KeepAnchor);
-					qtc.setCharFormat(qcfn);
-					qtbi = qtb.begin();
+					qcf = QTextCharFormat();
 				}
+			}
+
+			if (qcf.isImageFormat()) {
+				QTextImageFormat imgFmt = qcf.toImageFormat();
+				if (fitImageFormat(imgFmt, maxImageWidth, &qtd)) {
+					qcf = imgFmt;
+				}
+			}
+
+			if (qcf != originalFormat) {
+				QTextCursor qtc(&qtd);
+				qtc.setPosition(qtf.position(), QTextCursor::MoveAnchor);
+				qtc.setPosition(qtf.position() + qtf.length(), QTextCursor::KeepAnchor);
+				qtc.setCharFormat(qcf);
+				qtbi = qtb.begin();
 			}
 		}
 	}
@@ -799,7 +912,7 @@ void Log::setChatHistory(const QString &title, const QVector< ChatHistoryLogEntr
 		hc.insertHtml(Log::msgColor(
 			QString::fromLatin1("[%1 %2] ").arg(dateString.toHtmlEscaped(), timeString.toHtmlEscaped()), Log::Time));
 
-		validHtml(entry.console, &hc);
+		validHtml(entry.console, &hc, tlog->imageFitWidth());
 		hc.movePosition(QTextCursor::End);
 		hc.setBlockFormat(bf);
 	}
@@ -912,7 +1025,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 			dt.time().toString(QLatin1String(Global::get().s.bLog24HourClock ? "HH:mm:ss" : "hh:mm:ss AP"));
 		tc.insertHtml(Log::msgColor(QString::fromLatin1("[%1] ").arg(timeString.toHtmlEscaped()), Log::Time));
 
-		validHtml(console, &tc);
+		validHtml(console, &tc, tlog->imageFitWidth());
 		tc.movePosition(QTextCursor::End);
 		Global::get().mw->qteLog->setTextCursor(tc);
 

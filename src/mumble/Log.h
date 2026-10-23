@@ -156,7 +156,15 @@ public:
 	QString msgName(MsgType t) const;
 	void setIgnore(MsgType t, int ignore = 1 << 30);
 	void clearIgnore();
-	static QString validHtml(const QString &html, QTextCursor *tc = nullptr);
+	/// Sanitizes the given HTML and inserts it into the given cursor (or returns it as HTML if no cursor is given).
+	///
+	/// @param html The HTML to sanitize
+	/// @param tc If not null, the sanitized HTML is inserted at the cursor position
+	/// @param maxImageWidth If positive, inline images are scaled down so that they don't exceed this width
+	static QString validHtml(const QString &html, QTextCursor *tc = nullptr, int maxImageWidth = 0);
+	/// Scales all inline images in the given document so that they fit into the given width, preserving their
+	/// aspect ratio. Images that were scaled down before are scaled back up when the width allows it.
+	static void fitImagesToWidth(QTextDocument *doc, int maxWidth);
 	static QString imageToImg(const QByteArray &format, const QByteArray &image);
 	static QString imageToImg(QImage img, int maxSize = 0);
 	static QString msgColor(const QString &text, LogColorType t);
