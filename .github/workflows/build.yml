@@ -65,6 +65,11 @@ jobs:
               type: shared
               arch: x86_64
               compiler: clang-22
+            # Static Linux build so that this workflow also publishes a Linux artifact
+            - os: ubuntu-24.04
+              type: static
+              arch: x86_64
+              compiler: gcc
             - os: windows-2025
               type: static
               arch: x86_64
@@ -149,6 +154,7 @@ jobs:
           build/**/mumble*.msi
           build/**/mumble*.exe
           build/**/plugins/*.pdb
+          build/**/plugins/*.so
           build/**/mumble.pdb
           build/**/mumble_ol*.pdb
           build/**/mumble-server.pdb
