@@ -1486,12 +1486,17 @@ void MainWindow::loadState(const bool minimalView) {
 
 	qInfo() << "Trying to restore window state and geometry";
 
-	if (!geometry.isEmpty()) {
-		restoreGeometry(geometry);
-	}
-
+	// Restore the dock/toolbar state before the geometry. restoreGeometry() can set the window to
+	// maximized/fullscreen; if the dock state is restored after that while the window is still
+	// hidden and the saved layout does not fit the (smaller) normal geometry, Qt keeps a deferred
+	// copy of the restored layout. The setupView() call following this then modifies the layout,
+	// invalidating the items in that copy, and Qt crashes when it applies the stale copy later.
 	if (!state.isEmpty()) {
 		restoreState(state, stateVersion());
+	}
+
+	if (!geometry.isEmpty()) {
+		restoreGeometry(geometry);
 	}
 
 	qInfo() << "Successfully restored window state and geometry";
