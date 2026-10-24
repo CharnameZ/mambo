@@ -610,9 +610,13 @@ void MainWindow::setupGui() {
 	setupView(false);
 #endif
 
-	loadState(Global::get().s.bMinimalView);
+	const bool stateRestored = loadState(Global::get().s.bMinimalView);
 
 	setupView(false);
+
+	if (stateRestored) {
+		commitStateRestore(Global::get().s.bMinimalView);
+	}
 
 #ifdef Q_OS_MAC
 	setWindowOpacity(1.0f);
@@ -1450,7 +1454,7 @@ void MainWindow::setOnTop(bool top) {
 	}
 }
 
-void MainWindow::loadState(const bool minimalView) {
+bool MainWindow::loadState(const bool minimalView) {
 	// The Qt restoreGeometry and restoreState methods are very fragile and can crash the
 	// application. Even providing stateVersion() does not prevent all situations where a
 	// stored geometry or state will result in a crash loop.
@@ -1462,7 +1466,7 @@ void MainWindow::loadState(const bool minimalView) {
 
 	if (Global::get().s.preventWindowStates || Global::get().preventWindowStatesCLI) {
 		qWarning() << "Restoring window state and geometry is blocked by settings latch";
-		return;
+		return false;
 	}
 
 	QByteArray geometry;
@@ -1501,7 +1505,13 @@ void MainWindow::loadState(const bool minimalView) {
 
 	qInfo() << "Successfully restored window state and geometry";
 
-	// Write everything back as we did not crash during the restore
+	return true;
+}
+
+void MainWindow::commitStateRestore(const bool minimalView) {
+	// Only clear the latch once the restored layout has also been applied by the caller (see
+	// loadState). If applying it crashes, the next start skips restoring the state instead of
+	// crashing again.
 	Global::get().s.preventWindowStates = false;
 	storeState(minimalView);
 	Global::get().s.save();
@@ -1612,7 +1622,9 @@ void MainWindow::setupView(bool toggle_minimize) {
 	}
 
 	if (toggle_minimize) {
-		loadState(!showit);
+		if (loadState(!showit)) {
+			commitStateRestore(!showit);
+		}
 	} else {
 		QRect newgeom = frameGeometry();
 		resize(geometry().width() - newgeom.width() + geom.width(),

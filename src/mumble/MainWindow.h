@@ -156,7 +156,8 @@ public:
 	void focusNextMainWidget();
 	QPair< QByteArray, QImage > openImageFile();
 
-	void loadState(bool minimalView);
+	bool loadState(bool minimalView);
+	void commitStateRestore(bool minimalView);
 	void storeState(bool minimalView);
 
 	void updateChatBar();
